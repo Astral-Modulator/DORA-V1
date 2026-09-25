@@ -1,0 +1,6 @@
+{
+  "name": "DORA — Deep Orchestration Research Assistant",
+  "description": "An AI-powered deep research web application that orchestrates multi-step research, PDF document analysis, real source retrieval, and deduplicated synthesis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
