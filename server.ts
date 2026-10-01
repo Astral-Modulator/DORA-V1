@@ -9,7 +9,7 @@ import { ResearchRequestPayload, ResearchResult, QaMessage } from "./src/types.j
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Support up to 50MB payload for uploaded PDFs
   app.use(express.json({ limit: "50mb" }));
@@ -144,9 +144,22 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`DORA server running on http://0.0.0.0:${PORT}`);
-  });
+  const startListen = (port: number) => {
+    const server = app.listen(port, "0.0.0.0", () => {
+      console.log(`DORA server running on http://localhost:${port}`);
+    });
+
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        console.warn(`Port ${port} is currently in use, trying port ${port + 1}...`);
+        startListen(port + 1);
+      } else {
+        console.error("Server error:", err);
+      }
+    });
+  };
+
+  startListen(PORT);
 }
 
 startServer();
