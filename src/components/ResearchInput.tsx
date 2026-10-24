@@ -376,7 +376,7 @@ export const ResearchInput: React.FC<ResearchInputProps> = ({ onSearch, isLoadin
                   handleSubmit();
                 }
               }}
-              className={`w-full bg-transparent text-sm focus:outline-none resize-none leading-relaxed transition-colors ${
+              className={`w-full bg-transparent text-base sm:text-sm focus:outline-none resize-none leading-relaxed transition-colors ${
                 isDark
                   ? "text-neutral-100 placeholder-neutral-400"
                   : "text-neutral-300 placeholder-neutral-500"
@@ -386,9 +386,9 @@ export const ResearchInput: React.FC<ResearchInputProps> = ({ onSearch, isLoadin
 
           {/* Action Controls Bar */}
           <div
-            className="flex items-center justify-between pt-3 border-t mt-2 border-neutral-800/80"
+            className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-3 border-t mt-2 border-neutral-800/80"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between sm:justify-start gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -407,7 +407,7 @@ export const ResearchInput: React.FC<ResearchInputProps> = ({ onSearch, isLoadin
                 whileTap={{ scale: 0.98 }}
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading}
-                className="inline-flex items-center gap-1.5 text-xs rounded-md px-3 py-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer text-neutral-200 hover:text-white bg-[#27272a] hover:bg-[#323238] border border-neutral-600 hover:border-neutral-500"
+                className="inline-flex items-center gap-1.5 text-xs rounded-md px-3 py-2 sm:py-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer text-neutral-200 hover:text-white bg-[#27272a] hover:bg-[#323238] border border-neutral-600 hover:border-neutral-500"
               >
                 <Upload className="w-3.5 h-3.5 text-neutral-300" />
                 <span>{attachedFiles.length > 0 ? "Add More PDFs" : "Upload PDF"}</span>
@@ -424,7 +424,7 @@ export const ResearchInput: React.FC<ResearchInputProps> = ({ onSearch, isLoadin
               whileHover={!isLoading && (query.trim() || attachedFiles.length > 0) ? { scale: 1.02 } : {}}
               whileTap={!isLoading && (query.trim() || attachedFiles.length > 0) ? { scale: 0.98 } : {}}
               disabled={isLoading || (!query.trim() && attachedFiles.length === 0)}
-              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-md transition-all shadow-md cursor-pointer disabled:cursor-not-allowed ${
+              className={`inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-4 py-2.5 sm:py-2 rounded-md transition-all shadow-md cursor-pointer disabled:cursor-not-allowed w-full sm:w-auto ${
                 query.trim() || attachedFiles.length > 0
                   ? "bg-neutral-100 hover:bg-white text-black ring-1 ring-white/60 shadow-md shadow-black/40"
                   : "bg-[#27272a] text-neutral-400 border border-neutral-600/80 hover:bg-[#323238] hover:text-neutral-300"

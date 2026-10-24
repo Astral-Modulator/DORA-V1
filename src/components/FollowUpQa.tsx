@@ -258,7 +258,7 @@ export const FollowUpQa: React.FC<FollowUpQaProps> = ({
             onKeyDown={handleKeyDown}
             placeholder="Ask a follow-up question based on this research..."
             disabled={isLoading}
-            className={`w-full relative z-10 outline-none text-xs px-3.5 py-2.5 rounded-[5px] transition-colors bg-[#18181b] border border-neutral-800/80 ${
+            className={`w-full relative z-10 outline-none text-base sm:text-xs px-3.5 py-2.5 rounded-[5px] transition-colors bg-[#18181b] border border-neutral-800/80 ${
               isDark
                 ? "text-neutral-100 placeholder:text-neutral-400"
                 : "text-neutral-300 placeholder:text-neutral-500"

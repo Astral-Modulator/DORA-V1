@@ -53,10 +53,22 @@
   --spark-color: #ffffff;
 }
 
-html, body {
+html {
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
   background-color: var(--bg-page);
   color: var(--text-primary);
   transition: background-color 0.25s ease, color 0.25s ease;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
 }
 
 input,

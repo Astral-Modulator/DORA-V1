@@ -1,4 +1,15 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut,
+  updateProfile,
+  type User as FirebaseUser,
+} from "firebase/auth";
+import { auth, googleProvider, githubProvider } from "../lib/firebase.js";
 
 export interface UserProfile {
   id: string;
@@ -15,95 +26,99 @@ interface AuthContextType {
   isLoading: boolean;
   loginWithGoogle: () => Promise<void>;
   loginWithGithub: () => Promise<void>;
-  loginWithEmail: (email: string, name?: string) => Promise<void>;
-  logout: () => void;
+  loginWithEmail: (email: string, password: string, name?: string) => Promise<void>;
+  registerWithEmail: (email: string, password: string, name: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
+  logout: () => Promise<void>;
 }
 
-const AUTH_STORAGE_KEY = "dora_user_session_v1";
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function mapFirebaseUser(firebaseUser: FirebaseUser, providerHint?: "google" | "github" | "email"): UserProfile {
+  const providerId = firebaseUser.providerData?.[0]?.providerId ?? "";
+  let provider: "google" | "github" | "email" = providerHint ?? "email";
+
+  if (providerId.includes("google")) provider = "google";
+  else if (providerId.includes("github")) provider = "github";
+  else if (providerHint) provider = providerHint;
+
+  return {
+    id: firebaseUser.uid,
+    email: firebaseUser.email ?? "",
+    name: firebaseUser.displayName ?? firebaseUser.email?.split("@")[0] ?? "Researcher",
+    avatarUrl: firebaseUser.photoURL ?? undefined,
+    provider,
+    verified: firebaseUser.emailVerified || provider === "google" || provider === "github",
+  };
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Listen to Firebase auth state changes
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.email) {
-          setUser(parsed);
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to read user session from storage:", e);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  const persistUser = (profile: UserProfile | null) => {
-    setUser(profile);
-    try {
-      if (profile) {
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(profile));
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        setUser(mapFirebaseUser(firebaseUser));
       } else {
-        localStorage.removeItem(AUTH_STORAGE_KEY);
+        setUser(null);
       }
-    } catch (e) {
-      console.warn("Failed to persist user session:", e);
-    }
-  };
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const loginWithGoogle = async () => {
     setIsLoading(true);
-    // Simulating OAuth verification latency
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const googleUser: UserProfile = {
-      id: "usr_google_" + Math.random().toString(36).substring(2, 9),
-      email: "researcher@gmail.com",
-      name: "Google Researcher",
-      provider: "google",
-      verified: true,
-      avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=128&h=128&fit=crop&crop=faces&auto=format&q=80",
-    };
-    persistUser(googleUser);
-    setIsLoading(false);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      setUser(mapFirebaseUser(result.user, "google"));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const loginWithGithub = async () => {
     setIsLoading(true);
-    // Simulating OAuth verification latency
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const githubUser: UserProfile = {
-      id: "usr_gh_" + Math.random().toString(36).substring(2, 9),
-      email: "developer@github.com",
-      name: "GitHub Developer",
-      provider: "github",
-      verified: true,
-      avatarUrl: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=128&h=128&fit=crop&crop=faces&auto=format&q=80",
-    };
-    persistUser(githubUser);
-    setIsLoading(false);
+    try {
+      const result = await signInWithPopup(auth, githubProvider);
+      setUser(mapFirebaseUser(result.user, "github"));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const loginWithEmail = async (email: string, name?: string) => {
+  const loginWithEmail = async (email: string, password: string, _name?: string) => {
     setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const emailUser: UserProfile = {
-      id: "usr_email_" + Math.random().toString(36).substring(2, 9),
-      email: email.trim().toLowerCase(),
-      name: name?.trim() || email.split("@")[0] || "Researcher",
-      provider: "email",
-      verified: true,
-    };
-    persistUser(emailUser);
-    setIsLoading(false);
+    try {
+      const result = await signInWithEmailAndPassword(auth, email, password);
+      setUser(mapFirebaseUser(result.user, "email"));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const logout = () => {
-    persistUser(null);
+  const registerWithEmail = async (email: string, password: string, name: string) => {
+    setIsLoading(true);
+    try {
+      const result = await createUserWithEmailAndPassword(auth, email, password);
+      // Update display name
+      await updateProfile(result.user, { displayName: name });
+      setUser(mapFirebaseUser(result.user, "email"));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const resetPassword = async (email: string) => {
+    await sendPasswordResetEmail(auth, email);
+  };
+
+  const logout = async () => {
+    await signOut(auth);
+    setUser(null);
   };
 
   return (
@@ -115,6 +130,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithGoogle,
         loginWithGithub,
         loginWithEmail,
+        registerWithEmail,
+        resetPassword,
         logout,
       }}
     >

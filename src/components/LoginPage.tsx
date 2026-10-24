@@ -26,7 +26,7 @@ type AuthMode = "signin" | "register" | "forgot";
 
 export const LoginPage: React.FC = () => {
   const { isDark } = useTheme();
-  const { loginWithGoogle, loginWithGithub, loginWithEmail, isLoading } = useAuth();
+  const { loginWithGoogle, loginWithGithub, loginWithEmail, registerWithEmail, resetPassword, isLoading } = useAuth();
 
   const [mode, setMode] = useState<AuthMode>("signin");
 
@@ -41,7 +41,12 @@ export const LoginPage: React.FC = () => {
   // Interaction / Expansion States
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
-  const [isTouchExpanded, setIsTouchExpanded] = useState(false);
+  const [isTouchExpanded, setIsTouchExpanded] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.innerWidth < 640;
+    }
+    return false;
+  });
 
   // States & Feedback
   const [authError, setAuthError] = useState<string | null>(null);
@@ -156,10 +161,10 @@ export const LoginPage: React.FC = () => {
     if (mode === "forgot") {
       setIsSubmitting(true);
       try {
-        await new Promise((res) => setTimeout(res, 600));
+        await resetPassword(email.trim());
         setSuccessMessage("Password reset instructions have been sent to your email.");
       } catch (err: any) {
-        setAuthError("Unable to send reset link right now. Please try again later.");
+        setAuthError(err?.message || "Unable to send reset link right now. Please try again later.");
       } finally {
         setIsSubmitting(false);
       }
@@ -192,9 +197,25 @@ export const LoginPage: React.FC = () => {
     try {
       setIsSubmitting(true);
       setPendingProvider("email");
-      await loginWithEmail(email, mode === "register" ? name : undefined);
+      if (mode === "register") {
+        await registerWithEmail(email.trim(), password, name.trim());
+      } else {
+        await loginWithEmail(email.trim(), password);
+      }
     } catch (err: any) {
-      setAuthError(err?.message || "Authentication failed. Please check your credentials and try again.");
+      // Map Firebase error codes to friendly messages
+      const code = err?.code ?? "";
+      let friendlyMsg = err?.message || "Authentication failed. Please check your credentials and try again.";
+      if (code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-credential") {
+        friendlyMsg = "Incorrect email or password. Please try again.";
+      } else if (code === "auth/email-already-in-use") {
+        friendlyMsg = "An account with this email already exists. Try signing in instead.";
+      } else if (code === "auth/too-many-requests") {
+        friendlyMsg = "Too many failed attempts. Please wait a moment and try again.";
+      } else if (code === "auth/network-request-failed") {
+        friendlyMsg = "Network error. Please check your connection and try again.";
+      }
+      setAuthError(friendlyMsg);
     } finally {
       setIsSubmitting(false);
       setPendingProvider(null);
@@ -690,7 +711,7 @@ export const LoginPage: React.FC = () => {
                             placeholder="Dr. Alex Rivera"
                             autoComplete="name"
                             disabled={isLoading || isSubmitting}
-                            className={`w-full rounded-lg pl-9 pr-3 py-2 text-xs outline-none transition-all duration-200 ${
+                            className={`w-full rounded-lg pl-9 pr-3 py-2.5 sm:py-2 text-base sm:text-xs outline-none transition-all duration-200 ${
                               isDark
                                 ? "bg-[#121214] border border-neutral-700/80 focus:border-neutral-400 text-neutral-100 placeholder:text-neutral-400"
                                 : "bg-neutral-50 border border-neutral-300 focus:border-neutral-600 text-neutral-900 placeholder:text-neutral-500"
@@ -720,7 +741,7 @@ export const LoginPage: React.FC = () => {
                           placeholder="researcher@lab.org"
                           autoComplete="email"
                           disabled={isLoading || isSubmitting}
-                          className={`w-full rounded-lg pl-9 pr-3 py-2 text-xs outline-none transition-all duration-200 ${
+                          className={`w-full rounded-lg pl-9 pr-3 py-2.5 sm:py-2 text-base sm:text-xs outline-none transition-all duration-200 ${
                             isDark
                               ? "bg-[#121214] border border-neutral-700/80 focus:border-neutral-400 text-neutral-100 placeholder:text-neutral-400"
                               : "bg-neutral-50 border border-neutral-300 focus:border-neutral-600 text-neutral-900 placeholder:text-neutral-500"
@@ -766,7 +787,7 @@ export const LoginPage: React.FC = () => {
                               placeholder="••••••••••••"
                               autoComplete={mode === "signin" ? "current-password" : "new-password"}
                               disabled={isLoading || isSubmitting}
-                              className={`w-full rounded-lg pl-9 pr-10 py-2 text-xs outline-none transition-all duration-200 ${
+                              className={`w-full rounded-lg pl-9 pr-10 py-2.5 sm:py-2 text-base sm:text-xs outline-none transition-all duration-200 ${
                                 isDark
                                   ? "bg-[#121214] border border-neutral-700/80 focus:border-neutral-400 text-neutral-100 placeholder:text-neutral-400"
                                   : "bg-neutral-50 border border-neutral-300 focus:border-neutral-600 text-neutral-900 placeholder:text-neutral-500"
@@ -808,7 +829,7 @@ export const LoginPage: React.FC = () => {
                                 placeholder="••••••••••••"
                                 autoComplete="new-password"
                                 disabled={isLoading || isSubmitting}
-                                className={`w-full rounded-lg pl-9 pr-10 py-2 text-xs outline-none transition-all duration-200 ${
+                                className={`w-full rounded-lg pl-9 pr-10 py-2.5 sm:py-2 text-base sm:text-xs outline-none transition-all duration-200 ${
                                   isDark
                                     ? "bg-[#121214] border border-neutral-700/80 focus:border-neutral-400 text-neutral-100 placeholder:text-neutral-400"
                                     : "bg-neutral-50 border border-neutral-300 focus:border-neutral-600 text-neutral-900 placeholder:text-neutral-500"

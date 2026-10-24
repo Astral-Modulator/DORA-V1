@@ -527,7 +527,7 @@ export const ResearchViewer: React.FC<ResearchViewerProps> = ({
                   ),
                   code: ({ children }) => (
                     <code
-                      className={`font-mono text-xs px-1 py-0.5 rounded ${
+                      className={`font-mono text-xs px-1 py-0.5 rounded break-words ${
                         isDark
                           ? "bg-neutral-900 text-neutral-200"
                           : "bg-neutral-100 text-neutral-800 border border-neutral-300"
@@ -535,6 +535,28 @@ export const ResearchViewer: React.FC<ResearchViewerProps> = ({
                     >
                       {children}
                     </code>
+                  ),
+                  pre: ({ children }) => (
+                    <pre className="overflow-x-auto p-3 rounded my-2 text-xs font-mono max-w-full bg-neutral-900 text-neutral-100 border border-neutral-800">
+                      {children}
+                    </pre>
+                  ),
+                  table: ({ children }) => (
+                    <div className="w-full overflow-x-auto my-3 rounded border border-neutral-800">
+                      <table className="w-full text-xs text-left border-collapse">
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  th: ({ children }) => (
+                    <th className={`p-2.5 font-semibold border-b ${isDark ? "bg-neutral-900/80 border-neutral-800 text-neutral-200" : "bg-neutral-100 border-neutral-200 text-neutral-800"}`}>
+                      {children}
+                    </th>
+                  ),
+                  td: ({ children }) => (
+                    <td className={`p-2.5 border-b ${isDark ? "border-neutral-900 text-neutral-300" : "border-neutral-200 text-neutral-700"}`}>
+                      {children}
+                    </td>
                   ),
                 }}
               >

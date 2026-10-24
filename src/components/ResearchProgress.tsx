@@ -24,7 +24,7 @@ export const ResearchProgress: React.FC<ResearchProgressProps> = ({ steps, query
       id="research-progress-panel"
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`w-full max-w-3xl mx-auto my-6 rounded-xl p-5 shadow-xl transition-colors ${
+      className={`w-full max-w-3xl mx-auto my-4 sm:my-6 rounded-xl p-4 sm:p-5 shadow-xl transition-colors ${
         isDark
           ? "bg-[#141416] border border-neutral-700/80"
           : "bg-white border border-neutral-200 shadow-neutral-200/60"

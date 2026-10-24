@@ -372,7 +372,7 @@ function AppContent() {
         extraScale={1.1}
       >
         <main
-          className={`min-h-screen flex flex-col justify-between p-4 sm:p-8 relative overflow-x-hidden transition-colors duration-200 ${
+          className={`min-h-screen flex flex-col justify-between p-3 sm:p-8 relative overflow-x-hidden transition-colors duration-200 ${
             isDark
               ? "bg-black text-neutral-100 selection:bg-neutral-800"
               : "bg-neutral-50 text-neutral-900 selection:bg-neutral-300"
@@ -426,7 +426,7 @@ function AppContent() {
       extraScale={1.1}
     >
       <main
-        className={`min-h-screen flex flex-col justify-between p-4 sm:p-8 relative overflow-x-hidden transition-colors duration-200 ${
+        className={`min-h-screen flex flex-col justify-between p-3 sm:p-8 relative overflow-x-hidden transition-colors duration-200 ${
           isDark
             ? "bg-black text-neutral-100 selection:bg-neutral-800"
             : "bg-neutral-50 text-neutral-900 selection:bg-neutral-300"
