@@ -68,11 +68,14 @@ export function createExpressApp() {
   // Streaming Research Endpoint (Server-Sent Events)
   // ──────────────────────────────────────────────
   app.post("/api/research/stream", async (req, res) => {
-    // Validate before setting SSE headers so we can still return proper HTTP status
     const payload: ResearchRequestPayload = req.body;
     if (!payload || !payload.query || typeof payload.query !== "string") {
       return res.status(400).json({ error: "Missing or invalid 'query' in request body." });
     }
+
+    const queryPreview = payload.query.slice(0, 60);
+    const mode = payload.mode || "deep";
+    console.log(`[SSE] Incoming research stream request: "${queryPreview}" (mode=${mode}, hasPdf=${Boolean(payload.files?.length || payload.file)})`);
 
     // Configure SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -87,6 +90,7 @@ export function createExpressApp() {
       if (finished) return;
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        (res as any).flush?.();
       } catch (writeErr) {
         console.warn("[SSE] Write failed:", writeErr);
       }
@@ -98,18 +102,22 @@ export function createExpressApp() {
       try { res.end(); } catch { /* already closed */ }
     };
 
-    // Hard timeout: send an error frame and close before Vercel kills the function
+    // Hard safety timeout: send error + done terminal events before Vercel kills function
     const timeoutHandle = setTimeout(() => {
-      console.warn("[SSE] Research request timed out.");
+      console.warn(`[SSE] Research request reached overall safety timeout (55s) for: "${queryPreview}"`);
       sendEvent("error", {
         message: "Research timed out. The topic may require too many sub-steps. Try using 'Quick' mode or a more specific query.",
       });
+      sendEvent("done", { success: false, reason: "timeout" });
       finish();
     }, RESEARCH_TIMEOUT_MS);
 
     // Handle early client disconnect
     req.on("close", () => {
       clearTimeout(timeoutHandle);
+      if (!finished) {
+        console.log(`[SSE] Client closed connection early for: "${queryPreview}"`);
+      }
       finished = true;
     });
 
@@ -119,12 +127,14 @@ export function createExpressApp() {
       });
 
       clearTimeout(timeoutHandle);
+      console.log(`[SSE] Successfully completed research for: "${queryPreview}". Dispatching result and done events.`);
       sendEvent("result", result);
       sendEvent("done", { success: true });
     } catch (runErr: unknown) {
       clearTimeout(timeoutHandle);
-      console.error("[SSE] Research orchestration error:", runErr);
+      console.error(`[SSE] Research orchestration error for "${queryPreview}":`, runErr);
       sendEvent("error", { message: errorMessage(runErr) });
+      sendEvent("done", { success: false, reason: "error" });
     } finally {
       finish();
     }

@@ -145,10 +145,11 @@ function AppContent() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let hasReceivedResult = false;
 
-      while (true) {
+      readLoop: while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) break readLoop;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n\n");
@@ -192,6 +193,7 @@ function AppContent() {
               )
             );
           } else if (eventName === "result") {
+            hasReceivedResult = true;
             const researchRes = data as ResearchResult;
             setResult(researchRes);
 
@@ -224,10 +226,20 @@ function AppContent() {
                 : JSON.stringify(data).slice(0, 300);
             throw new Error(msg);
           } else if (eventName === "done") {
-            // Server signalled completion — break out of outer read loop
-            break;
+            // Server signalled completion — break out of outer read loop completely
+            break readLoop;
           }
         }
+      }
+
+      try {
+        await reader.cancel();
+      } catch {
+        // Stream already closed
+      }
+
+      if (!hasReceivedResult) {
+        throw new Error("Research stream closed before returning findings. Please try again with a specific question or 'Quick' mode.");
       }
     } catch (err: any) {
       if (err.name === "AbortError") {

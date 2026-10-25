@@ -151,10 +151,28 @@ Please synthesize the research answer conforming strictly to the JSON schema.`;
     });
 
     const text = response.text || "{}";
-    const parsed = JSON.parse(text);
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      try {
+        // Fix unescaped backslashes commonly occurring in technical formulas, paths, or LaTeX
+        const sanitized = text.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+        parsed = JSON.parse(sanitized);
+      } catch {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          try {
+            parsed = JSON.parse(match[0].replace(/\\(?!["\\/bfnrtu])/g, "\\\\"));
+          } catch {
+            parsed = null;
+          }
+        }
+      }
+    }
 
     let sections: StructuredSection[] = [];
-    if (Array.isArray(parsed.sections) && parsed.sections.length > 0) {
+    if (parsed && Array.isArray(parsed.sections) && parsed.sections.length > 0) {
       sections = parsed.sections.map((s: { title: string; content: string }, idx: number) => ({
         id: `sec-${idx + 1}`,
         title: s.title || `Section ${idx + 1}`,
