@@ -318,151 +318,17 @@ PRIORITY SOURCES & REQUIREMENTS:
       }
     }
 
-    // If live search tool was throttled or academic mode needs deeper paper metadata, run targeted academic extraction
-    if (sourcesMap.size === 0 || (isAcademic && papers.length < 3)) {
-      try {
-        const literaturePrompt = `For the topic "${query}" (${mode.toUpperCase()} research mode), identify authentic, verifiable academic papers, IEEE open access or conference proceedings, official documentation, and technical resources.
-Do NOT invent non-existent papers; only provide well-known, peer-reviewed, or official publications (e.g. arXiv, IEEE, Nature, ACM, W3C, RFCs).
-
-Respond with valid JSON conforming to:
-{
-  "sources": [
-    {
-      "title": "Title of paper, standard, or official documentation",
-      "url": "https://...",
-      "sourceType": "academic" | "official" | "documentation",
-      "domain": "Domain name",
-      "authorityTier": "High" | "Medium",
-      "academicCredibility": "IEEE Publication" | "Peer-Reviewed" | "Official Standard",
-      "publishedYear": "2024"
-    }
-  ],
-  "papers": [
-    {
-      "title": "Paper Title",
-      "authors": "Author names",
-      "year": "2024",
-      "publication": "IEEE / arXiv / ACM / Nature",
-      "url": "https://...",
-      "doi": "10.xxxx/...",
-      "abstract": "Concise summary of paper's objective and findings",
-      "keyContribution": "Specific architectural or theoretical contribution",
-      "methodology": "How the evaluation or study was conducted",
-      "limitations": "Known constraints or experimental limitations",
-      "isIeeeOpenAccess": boolean,
-      "isOpenAccess": boolean,
-      "isPaywalled": boolean,
-      "relevance": "Why relevant to this research query"
-    }
-  ],
-  "videos": [
-    {
-      "title": "Educational Lecture or Conference Talk Title",
-      "url": "https://www.youtube.com/watch?v=...",
-      "description": "Short description"
-    }
-  ],
-  "additionalResources": [
-    {
-      "type": "tool" | "dataset" | "resource",
-      "title": "Resource / Dataset / Tool Title",
-      "url": "https://...",
-      "description": "Description of tool or dataset"
-    }
-  ]
-}`;
-
-        const litResponse = await generateContentWithRetry({
-          preferredModel: PRIMARY_MODEL,
-          contents: literaturePrompt,
-          config: {
-            responseMimeType: "application/json",
-            temperature: 0.2,
-          },
-        });
-
-        const litText = litResponse.text || "{}";
-        const parsedLit = JSON.parse(litText);
-
-        if (Array.isArray(parsedLit.sources)) {
-          for (const s of parsedLit.sources) {
-            if (s.url && s.title && !sourcesMap.has(s.url)) {
-              const evalResult = evaluateSourceQuality(s.url, s.title, query);
-              sourcesMap.set(s.url, {
-                id: citationCounter++,
-                title: s.title,
-                url: s.url,
-                sourceType: s.sourceType || evalResult.sourceType,
-                domain: s.domain || extractDomain(s.url),
-                quality: {
-                  ...evalResult.quality,
-                  authorityTier: s.authorityTier || evalResult.quality.authorityTier,
-                  academicCredibility: s.academicCredibility || evalResult.quality.academicCredibility,
-                  publishedYear: s.publishedYear || evalResult.quality.publishedYear,
-                },
-              });
-            }
-          }
-        }
-
-        if (Array.isArray(parsedLit.papers)) {
-          for (const p of parsedLit.papers) {
-            if (p.url && p.title) {
-              papers.push({
-                id: `paper-${papers.length + 1}`,
-                title: p.title,
-                authors: p.authors,
-                year: p.year,
-                publication: p.publication || "Academic",
-                url: p.url,
-                doi: p.doi,
-                abstract: p.abstract,
-                keyContribution: p.keyContribution,
-                methodology: p.methodology,
-                limitations: p.limitations,
-                isIeeeOpenAccess: Boolean(p.isIeeeOpenAccess),
-                isOpenAccess: Boolean(p.isOpenAccess),
-                isPaywalled: Boolean(p.isPaywalled),
-                relevance: p.relevance || `Academic publication addressing ${query}`,
-              });
-            }
-          }
-        }
-
-        if (Array.isArray(parsedLit.videos)) {
-          for (const v of parsedLit.videos) {
-            if (v.url && v.title) {
-              videos.push({
-                id: `video-${videos.length + 1}`,
-                type: "video",
-                title: v.title,
-                url: v.url,
-                description: v.description || "Educational lecture",
-              });
-            }
-          }
-        }
-
-        if (Array.isArray(parsedLit.additionalResources)) {
-          for (const r of parsedLit.additionalResources) {
-            if (r.url && r.title) {
-              additionalResources.push({
-                id: `resource-${additionalResources.length + 1}`,
-                type: r.type || "resource",
-                title: r.title,
-                url: r.url,
-                description: r.description || "Research resource",
-              });
-            }
-          }
-        }
-      } catch (litErr) {
-        console.warn("Literature extraction error:", litErr);
-      }
-    }
+    // A grounded response can legitimately contain no chunks (for example, when
+    // the model decides search will not improve a simple question). Never label
+    // that as verified retrieval: synthesis must be able to disclose the limit.
+    const effectiveSummary = summaryText?.trim()
+      ? (sourcesMap.size > 0
+          ? summaryText.trim()
+          : `No external sources were returned for this request. The following is an unverified model-generated overview:\n\n${summaryText.trim()}`)
+      : "No external sources were returned for this request.";
 
     return {
-      summaryOfFindings: summaryText,
+      summaryOfFindings: effectiveSummary,
       sources: Array.from(sourcesMap.values()),
       papers,
       videos,
@@ -472,9 +338,7 @@ Respond with valid JSON conforming to:
   } catch (err) {
     console.error("Error in retrieveInformation:", err);
     return {
-      summaryOfFindings: `Could not complete live external search: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      summaryOfFindings: "External source retrieval was unavailable. Do not present any claim as retrieved or cite sources that were not returned.",
       sources: [],
       papers: [],
       videos: [],

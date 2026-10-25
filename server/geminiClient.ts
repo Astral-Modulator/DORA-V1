@@ -2,6 +2,11 @@ import { GoogleGenAI } from "@google/genai";
 
 let genAIClient: GoogleGenAI | null = null;
 
+/** Test-only seam. Production code always creates the client from GEMINI_API_KEY. */
+export function setGeminiClientForTesting(client: GoogleGenAI | null): void {
+  genAIClient = client;
+}
+
 export function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -20,14 +25,18 @@ export function getGeminiClient(): GoogleGenAI {
 // Active, verified production model IDs (2026)
 export const PRIMARY_MODEL = "gemini-3.5-flash-lite";   // fast, cost-efficient, active
 export const ADVANCED_MODEL = "gemini-3.5-flash";        // higher capability, verified active
-export const BACKUP_MODEL = "gemini-flash-lite-latest";  // resilient fallback alias
+// Use an explicit stable ID rather than a moving alias, so a fallback cannot
+// fail merely because an alias changes or is unavailable for the project.
+export const BACKUP_MODEL = "gemini-3.5-flash-lite";
 
 /** Returns true for transient errors that are safe to retry on the same model */
-function isRetryable(err: unknown): boolean {
+export function isRetryable(err: unknown): boolean {
   const msg = String((err as any)?.message ?? err).toLowerCase();
   return (
     msg.includes("503") ||
     msg.includes("unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
     msg.includes("429") ||
     msg.includes("resource_exhausted") ||
     msg.includes("quota") ||
@@ -39,7 +48,7 @@ function isRetryable(err: unknown): boolean {
 }
 
 /** Sleep for `ms` milliseconds */
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -47,27 +56,29 @@ function sleep(ms: number): Promise<void> {
  * Exponential backoff with full jitter.
  * delay = random(0, min(cap, base * 2^attempt))
  */
-function backoffMs(attempt: number, baseMs = 500, capMs = 3_000): number {
+export function backoffMs(attempt: number, baseMs = 300, capMs = 1_500): number {
   const exponential = Math.min(capMs, baseMs * Math.pow(2, attempt));
   return Math.floor(Math.random() * exponential);
 }
 
 /** Race a promise against a timeout */
-export function withTimeout<T>(promise: Promise<T>, ms: number, description = "Operation"): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timeoutId = setTimeout(() => {
+export function withTimeout<T>(promise: Promise<T> | T, ms: number, description = "Operation"): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
       reject(new Error(`${description} timed out after ${ms}ms`));
     }, ms);
-  });
 
-  return Promise.race([
-    promise.then((res) => {
-      clearTimeout(timeoutId);
-      return res;
-    }),
-    timeoutPromise,
-  ]);
+    Promise.resolve(promise).then(
+      (result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      },
+      (err) => {
+        clearTimeout(timeoutId);
+        reject(err);
+      }
+    );
+  });
 }
 
 export interface GenerateParams {
@@ -75,7 +86,7 @@ export interface GenerateParams {
   config?: any;
   /** Override which model to try first. Defaults to PRIMARY_MODEL. */
   preferredModel?: string;
-  /** Per-call timeout in milliseconds (defaults to 20,000ms) */
+  /** Per-call timeout in milliseconds (defaults to 15,000ms) */
   timeoutMs?: number;
 }
 
@@ -83,16 +94,16 @@ export interface GenerateParams {
  * Calls generateContent with bounded exponential backoff + jitter + hard per-call timeout.
  * Sequence:
  *   1. Try primary model up to maxRetries times (with backoff on retryable errors).
- *   2. If primary fails or returns 404, fallback to ADVANCED_MODEL.
+ *   2. If primary fails, fallback to ADVANCED_MODEL.
  *   3. If ADVANCED_MODEL fails, fallback to BACKUP_MODEL.
  */
 export async function generateContentWithRetry(
   params: GenerateParams,
-  maxRetries = 2
+  maxRetries = 1
 ) {
   const ai = getGeminiClient();
   const primary = params.preferredModel || PRIMARY_MODEL;
-  const perCallTimeout = params.timeoutMs || 22_000;
+  const perCallTimeout = params.timeoutMs || 15_000;
 
   let lastErr: unknown;
 

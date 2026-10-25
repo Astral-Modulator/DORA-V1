@@ -146,90 +146,70 @@ function AppContent() {
       const decoder = new TextDecoder();
       let buffer = "";
       let hasReceivedResult = false;
+      let terminalError: Error | null = null;
+
+      const consumeFrames = (input: string, isFinal = false) => {
+        buffer += input;
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = isFinal ? "" : (frames.pop() || "");
+        return isFinal ? frames.filter(Boolean) : frames;
+      };
+
+      const processFrame = (block: string): "continue" | "done" => {
+        if (!block.trim() || block.trimStart().startsWith(":")) return "continue";
+
+        let eventName = "message";
+        const dataLines: string[] = [];
+        for (const line of block.split(/\r?\n/)) {
+          if (line.startsWith("event:")) eventName = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+        }
+
+        const dataStr = dataLines.join("\n");
+        if (!dataStr) return "continue";
+
+        let data: any;
+        try {
+          data = JSON.parse(dataStr);
+        } catch {
+          if (eventName === "error") terminalError = new Error(dataStr.slice(0, 300));
+          return eventName === "done" ? "done" : "continue";
+        }
+
+        if (eventName === "progress") {
+          const incomingStep = data as ProgressStep;
+          setProgressSteps((prev) => prev.map((step) =>
+            step.id === incomingStep.id ? { ...step, ...incomingStep } : step
+          ));
+        } else if (eventName === "result") {
+          hasReceivedResult = true;
+          const researchRes = data as ResearchResult;
+          setResult(researchRes);
+
+          const sessionId = `res-${Date.now()}`;
+          setActiveSessionId(sessionId);
+          const newHistoryItem: HistoryItem = {
+            id: sessionId, timestamp: Date.now(), query: researchRes.query,
+            result: researchRes, qaMessages: [], diagram: undefined,
+          };
+          setHistory((prev) => {
+            const updated = [newHistoryItem, ...prev.filter((h) => h.id !== sessionId)];
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(updated)); } catch (e) {
+              console.warn("Storage write error:", e);
+            }
+            return updated;
+          });
+        } else if (eventName === "error") {
+          terminalError = new Error(typeof data?.message === "string" ? data.message : JSON.stringify(data).slice(0, 300));
+        }
+        return eventName === "done" ? "done" : "continue";
+      };
 
       readLoop: while (true) {
         const { value, done } = await reader.read();
+        const frames = consumeFrames(decoder.decode(value || new Uint8Array(), { stream: !done }), done);
+        for (const frame of frames) if (processFrame(frame) === "done") break readLoop;
         if (done) break readLoop;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const block of lines) {
-          if (!block.trim()) continue;
-
-          let eventName = "message";
-          let dataStr = "";
-
-          const blockLines = block.split("\n");
-          for (const line of blockLines) {
-            if (line.startsWith("event:")) {
-              eventName = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              dataStr = line.slice(5).trim();
-            }
-          }
-
-          if (!dataStr) continue;
-
-          // Parse the JSON payload; fall back gracefully on malformed frames
-          let data: any = null;
-          try {
-            data = JSON.parse(dataStr);
-          } catch {
-            // Non-JSON frame — only an error if this was an error event
-            if (eventName === "error") {
-              throw new Error(dataStr.slice(0, 200));
-            }
-            console.warn("SSE non-JSON frame ignored:", dataStr.slice(0, 80));
-            continue;
-          }
-
-          if (eventName === "progress") {
-            const incomingStep = data as ProgressStep;
-            setProgressSteps((prev) =>
-              prev.map((step) =>
-                step.id === incomingStep.id ? { ...step, ...incomingStep } : step
-              )
-            );
-          } else if (eventName === "result") {
-            hasReceivedResult = true;
-            const researchRes = data as ResearchResult;
-            setResult(researchRes);
-
-            // Auto-persist in history
-            const sessionId = `res-${Date.now()}`;
-            setActiveSessionId(sessionId);
-            const newHistoryItem: HistoryItem = {
-              id: sessionId,
-              timestamp: Date.now(),
-              query: researchRes.query,
-              result: researchRes,
-              qaMessages: [],
-              diagram: undefined,
-            };
-
-            setHistory((prev) => {
-              const updated = [newHistoryItem, ...prev.filter((h) => h.id !== sessionId)];
-              try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-              } catch (e) {
-                console.warn("Storage write error:", e);
-              }
-              return updated;
-            });
-          } else if (eventName === "error") {
-            // Safely extract the human-readable message from the error frame
-            const msg =
-              (typeof data?.message === "string" && data.message)
-                ? data.message
-                : JSON.stringify(data).slice(0, 300);
-            throw new Error(msg);
-          } else if (eventName === "done") {
-            // Server signalled completion — break out of outer read loop completely
-            break readLoop;
-          }
-        }
       }
 
       try {
@@ -238,6 +218,7 @@ function AppContent() {
         // Stream already closed
       }
 
+      if (terminalError) throw terminalError;
       if (!hasReceivedResult) {
         throw new Error("Research stream closed before returning findings. Please try again with a specific question or 'Quick' mode.");
       }

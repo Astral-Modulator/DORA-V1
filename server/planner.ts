@@ -1,6 +1,45 @@
 import { generateContentWithRetry, PRIMARY_MODEL } from "./geminiClient.js";
 import { ResearchPlan, ResearchMode } from "../src/types.js";
 
+function detectQueryCategory(query: string): "programming" | "comparative" | "document" | "academic" | "general" {
+  const q = query.toLowerCase();
+  if (
+    q.includes(" vs ") ||
+    q.includes("versus") ||
+    q.includes("compare") ||
+    q.includes("comparison") ||
+    q.includes("difference between")
+  ) {
+    return "comparative";
+  }
+  if (
+    q.includes("code") ||
+    q.includes("implement") ||
+    q.includes("typescript") ||
+    q.includes("javascript") ||
+    q.includes("python") ||
+    q.includes("algorithm") ||
+    q.includes("function") ||
+    q.includes("api") ||
+    q.includes("error") ||
+    q.includes("lru cache") ||
+    q.includes("react")
+  ) {
+    return "programming";
+  }
+  if (
+    q.includes("paper") ||
+    q.includes("ieee") ||
+    q.includes("arxiv") ||
+    q.includes("methodology") ||
+    q.includes("theorem") ||
+    q.includes("ablation")
+  ) {
+    return "academic";
+  }
+  return "general";
+}
+
 export async function createResearchPlan(
   query: string,
   mode: ResearchMode = "deep",
@@ -9,28 +48,24 @@ export async function createResearchPlan(
 ): Promise<ResearchPlan> {
   const isAcademic = mode === "academic";
   const isQuick = mode === "quick";
+  const category = hasPdf ? "document" : detectQueryCategory(query);
 
   const systemInstruction = `You are DORA's Research Planning Engine.
-Your task is to analyze the research inquiry and formulate a clean, high-precision, concise research plan based on the requested research mode: "${mode.toUpperCase()}".
+Analyze the research inquiry and formulate a clean, high-precision research plan tailored to the query type and research mode: "${mode.toUpperCase()}".
+
+QUERY UNDERSTANDING:
+- General Knowledge / Conceptual (e.g. "What is AI?", "Explain cloud computing in simple terms"): Outline foundational principles, mechanisms, and real-world impact.
+- Programming / Technical (e.g. "How to implement LRU cache"): Outline core architecture, data structures, implementation specifics, and performance edge cases.
+- Comparative (e.g. "A vs B"): Outline direct comparison dimensions, benchmarks, architectural trade-offs, and optimal decision criteria.
+- Academic / Scientific: Outline literature context, methodology, empirical metrics, theoretical bounds, and open research challenges.
+- Document-Grounded (PDF attached): Outline document methodology, specific empirical findings, and cross-comparison with external literature.
 
 MODE SPECIFICATIONS:
-1. "QUICK": Fast answer using a smaller, targeted research scope. Formulate 1-2 direct factual subtasks and 1-2 concise search queries.
-2. "DEEP": Multi-step, thorough investigation across multiple angles, technical developments, adoption, trade-offs, and real-world implementations. Formulate 3-5 distinct subtasks.
-3. "ACADEMIC": Rigorous academic inquiry optimized for research papers, peer-reviewed literature, theoretical mechanisms, methodology analysis, empirical benchmarks, and research gaps/limitations. Formulate 4-6 academic subtasks and search queries targeting IEEE, arXiv, ACM, and top journal domains.
+1. "QUICK": Fast answer using 1-2 focused subtasks and 1-2 targeted search queries.
+2. "DEEP": Multi-dimensional investigation across 3-4 distinct subtasks.
+3. "ACADEMIC": Rigorous academic inquiry with 4-5 academic subtasks and search queries targeting IEEE, arXiv, ACM, and top peer-reviewed literature.
 
-PDF INTEGRATION:
-${
-  hasPdf
-    ? `Documents attached: ${pdfNames.join(", ") || "PDF Document"}. Incorporate document findings, methodology, and cross-comparison with external literature.`
-    : "No document attached."
-}
-
-CRITICAL RULES:
-- Provide a clear, scannable list of subtasks that DORA will research.
-- Do NOT output internal reasoning, internal chain-of-thought, or meta-commentary.
-- Keep subtask titles clear, punchy, and informative (e.g. "Current architectural paradigms", "Benchmarking and empirical metrics", "Limitations and known failure modes").
-
-Always respond in strictly valid JSON without markdown wrapping or backticks. Format:
+Respond in strictly valid JSON without markdown wrapping:
 {
   "intent": "Concise summary of research intent",
   "isComplex": boolean,
@@ -42,6 +77,7 @@ Always respond in strictly valid JSON without markdown wrapping or backticks. Fo
   try {
     const prompt = `Research Query: "${query}"
 Selected Mode: ${mode.toUpperCase()}
+Category: ${category}
 Attached Documents: ${hasPdf ? pdfNames.join(", ") || "Attached PDF" : "None"}`;
 
     const response = await generateContentWithRetry({
@@ -52,6 +88,7 @@ Attached Documents: ${hasPdf ? pdfNames.join(", ") || "Attached PDF" : "None"}`;
         responseMimeType: "application/json",
         temperature: 0.2,
       },
+      timeoutMs: 8_000,
     });
 
     const text = response.text || "{}";
@@ -60,31 +97,16 @@ Attached Documents: ${hasPdf ? pdfNames.join(", ") || "Attached PDF" : "None"}`;
     return {
       intent: parsed.intent || `Investigate ${query} using ${mode} research methodology.`,
       mode,
-      isComplex: isQuick ? false : true,
+      isComplex: !isQuick,
       hasPdf,
       subtasks:
         Array.isArray(parsed.subtasks) && parsed.subtasks.length > 0
           ? parsed.subtasks
-          : isQuick
-          ? [`Core definition, mechanism, and answer for "${query}"`]
-          : isAcademic
-          ? [
-              "Theoretical framework and foundational literature",
-              "State-of-the-art methodology and algorithmic mechanisms",
-              "Empirical benchmarks, ablation studies, and performance data",
-              "Critical limitations, open questions, and research gaps",
-              "Key peer-reviewed and IEEE open access publications",
-            ]
-          : [
-              "Core principles and current technologies",
-              "Recent developments and architectural patterns",
-              "Empirical performance and industry adoption",
-              "Advantages, trade-offs, and critical limitations",
-            ],
+          : getFallbackSubtasks(query, mode, category, hasPdf, pdfNames),
       searchQueries:
         Array.isArray(parsed.searchQueries) && parsed.searchQueries.length > 0
           ? parsed.searchQueries
-          : [query],
+          : [query, `${query} overview`],
       focusAreas:
         Array.isArray(parsed.focusAreas) && parsed.focusAreas.length > 0
           ? parsed.focusAreas
@@ -92,40 +114,63 @@ Attached Documents: ${hasPdf ? pdfNames.join(", ") || "Attached PDF" : "None"}`;
     };
   } catch (err) {
     console.error("Error generating research plan:", err);
-    // Fallback heuristic plan
     return {
       intent: `Conduct ${mode} research on: ${query}`,
       mode,
       isComplex: !isQuick,
       hasPdf,
-      subtasks: isQuick
-        ? [`Core factual synthesis and answer for "${query}"`]
-        : isAcademic
-        ? [
-            `Literature review and foundational context of ${query}`,
-            `Methodological and architectural breakdown`,
-            `Empirical results, benchmarks, and validation`,
-            `Limitations, trade-offs, and open research problems`,
-            `Key academic and IEEE publications`,
-          ]
-        : [
-            `Current technologies and foundations of ${query}`,
-            `Recent developments and state of the art`,
-            `Real-world adoption, performance benchmarks, and use cases`,
-            `Advantages, limitations, and future outlook`,
-          ],
-      searchQueries: isAcademic
-        ? [
-            `${query} review paper IEEE arXiv`,
-            `${query} methodology benchmarks evaluation`,
-            `${query} limitations open research problems`,
-          ]
-        : [
-            query,
-            `${query} architecture documentation`,
-            `${query} benchmarks comparison`,
-          ],
+      subtasks: getFallbackSubtasks(query, mode, category, hasPdf, pdfNames),
+      searchQueries: [query, `${query} documentation`, `${query} analysis`],
     };
   }
 }
 
+function getFallbackSubtasks(
+  query: string,
+  mode: ResearchMode,
+  category: string,
+  hasPdf: boolean,
+  pdfNames: string[]
+): string[] {
+  if (mode === "quick") {
+    return [`Core definition, verified mechanism, and concise answer for "${query}"`];
+  }
+
+  if (hasPdf) {
+    return [
+      `Analyze document structure, core claims, and methodologies in ${pdfNames.join(", ") || "uploaded document"}`,
+      `Extract key empirical findings, quantitative figures, and page-level references`,
+      `Cross-reference document assertions with broader industry knowledge and literature`,
+    ];
+  }
+
+  if (category === "programming") {
+    return [
+      `Core algorithmic architecture, data structures, and implementation design for ${query.slice(0, 35)}`,
+      "Production TypeScript/code examples and algorithmic complexity (time and space)",
+      "Edge cases, concurrency/memory constraints, and optimization strategies",
+    ];
+  }
+
+  if (category === "comparative") {
+    return [
+      `Architectural foundations and design philosophies of the competing solutions`,
+      `Direct empirical benchmarks, throughput, latency, and performance trade-offs`,
+      `Decision matrix: Ideal production use cases, costs, and operational trade-offs`,
+    ];
+  }
+
+  if (mode === "academic") {
+    return [
+      `Theoretical framework and foundational literature for ${query.slice(0, 35)}`,
+      "State-of-the-art methodology, algorithmic mechanisms, and empirical benchmarks",
+      "Critical limitations, open questions, and key peer-reviewed/IEEE publications",
+    ];
+  }
+
+  return [
+    `Core principles, operational mechanisms, and taxonomy of ${query.slice(0, 35)}`,
+    "Recent developments, modern implementations, and practical adoption",
+    "Empirical performance, critical trade-offs, and future outlook",
+  ];
+}

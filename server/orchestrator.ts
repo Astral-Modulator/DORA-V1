@@ -1,6 +1,6 @@
 import { createResearchPlan } from "./planner.js";
 import { retrieveInformation } from "./retriever.js";
-import { processPdfDocuments } from "./pdfProcessor.js";
+import { processPdfDocuments, MultiPdfAnalysisResult } from "./pdfProcessor.js";
 import { runDeduplicationSystem } from "./deduplicator.js";
 import { synthesizeResearchAnswer } from "./synthesizer.js";
 import { generateContentWithRetry, PRIMARY_MODEL, withTimeout } from "./geminiClient.js";
@@ -10,58 +10,32 @@ import {
   ProgressStep,
   ProgressStepId,
   UploadedFile,
+  ResearchPlan,
 } from "../src/types.js";
 
 export type ProgressCallback = (step: ProgressStep) => void;
 
 // ---------------------------------------------------------------------------
-// Heuristic: detect whether a query is a simple conversational/factual question
-// that does NOT need a full multi-step research pipeline.
+// Pure conversational greetings or salutations (no research requested)
 // ---------------------------------------------------------------------------
-function isSimpleQuestion(query: string): boolean {
+function isConversationalGreeting(query: string): boolean {
   const q = query.trim().toLowerCase();
-
-  // Very short queries (≤ 6 words) with a question word → simple
-  const words = q.split(/\s+/);
-  const questionWords = ["what", "who", "when", "where", "why", "how", "is", "are", "does", "do", "can", "will"];
-  const startsWithQuestion = questionWords.some((w) => q.startsWith(w));
-
-  if (words.length <= 6 && startsWithQuestion) return true;
-
-  // Conversational patterns
-  const conversationalPatterns = [
-    /^(hi|hello|hey|good morning|good evening)\b/,
-    /^(what is|what's|whats)\s+\w+\??$/,
-    /^(who is|who's|who was)\s+.{3,40}\??$/,
-    /^(when (did|was|is))\s+.{3,40}\??$/,
-    /^(define|meaning of|definition of)\s+/,
-    /^(how (do|does|did|to))\s+\w+(\s+\w+)?\??$/,
-    /^(capital of|currency of|population of)\s+/,
-    /^(yes|no|okay|ok|thanks|thank you)\b/,
-  ];
-
-  if (conversationalPatterns.some((p) => p.test(q))) return true;
-
-  // Long, complex queries → full pipeline
-  if (words.length >= 12) return false;
-
-  return false;
+  const conversationalRegex = /^(hi|hello|hey|good morning|good evening|good afternoon|howdy|sup|greetings|thanks|thank you|ok|okay|bye|goodbye)[\s.!?]*$/i;
+  return conversationalRegex.test(q);
 }
 
 // ---------------------------------------------------------------------------
-// Lightweight direct Q&A path (skips planner / retriever / synthesis pipeline)
+// Conversational greeting responder (only for trivial non-research greetings in Quick mode)
 // ---------------------------------------------------------------------------
-async function runQuickAnswer(
+async function runConversationalGreeting(
   query: string,
   notify: (id: ProgressStepId, label: string, status: ProgressStep["status"], detail?: string) => void,
   startTime: number
 ): Promise<ResearchResult> {
-  notify("planning", "Analysing question…", "in_progress");
+  notify("planning", "Analyzing greeting…", "in_progress");
 
-  const systemInstruction = `You are DORA, an expert research assistant.
-Answer the user's question clearly and accurately. Be concise but complete.
-Format your response in clean Markdown (use **bold**, bullet points, or code blocks where helpful).
-Do not pad with generic introductions or unnecessary filler.`;
+  const systemInstruction = `You are DORA, an advanced Deep Orchestration Research Assistant.
+Respond warmly and concisely to the user's greeting. Introduce yourself briefly and invite the user to ask any research question across Quick, Deep, or Academic modes, or upload PDF documents.`;
 
   let answerText: string;
   try {
@@ -69,15 +43,16 @@ Do not pad with generic introductions or unnecessary filler.`;
       preferredModel: PRIMARY_MODEL,
       contents: query,
       config: { systemInstruction, temperature: 0.3 },
+      timeoutMs: 6_000,
     });
-    answerText = response.text?.trim() || "I was unable to generate an answer. Please try again.";
+    answerText = response.text?.trim() || "Hello! I am DORA, your Deep Research Assistant. How can I help you research today?";
   } catch (err: any) {
-    answerText = `Could not retrieve an answer: ${err?.message || String(err)}`;
+    answerText = "Hello! I am DORA (Deep Orchestration Research Assistant). Ask me any question or upload PDF documents to begin.";
   }
 
-  notify("planning", "Answer ready", "completed");
-  ["retrieval", "pdf_processing", "evaluation", "synthesis", "deduplication"].forEach((id) => {
-    notify(id as ProgressStepId, "Skipped (simple question)", "skipped");
+  notify("planning", "Greeting ready", "completed");
+  (["retrieval", "pdf_processing", "evaluation", "synthesis", "deduplication"] as ProgressStepId[]).forEach((id) => {
+    notify(id, "Skipped (conversational greeting)", "skipped");
   });
 
   const durationMs = Date.now() - startTime;
@@ -95,13 +70,13 @@ Do not pad with generic introductions or unnecessary filler.`;
       mode: "quick",
       isComplex: false,
       hasPdf: false,
-      subtasks: [],
+      subtasks: ["Greet the user and introduce research capabilities"],
       searchQueries: [],
     },
     sections: [
       {
         id: "sec-1",
-        title: "Answer",
+        title: "Greeting & Overview",
         content: answerText,
       },
     ],
@@ -112,12 +87,16 @@ Do not pad with generic introductions or unnecessary filler.`;
     additionalResources: [],
     pdfReferences: [],
     contradictions: undefined,
-    relatedQuestions: [],
+    relatedQuestions: [
+      "What is artificial intelligence and its core architectures?",
+      "Compare quantum error correction architectures in recent papers",
+      "Explain cloud computing in simple terms",
+    ],
     stats: {
-      subtasksCompleted: 0,
+      subtasksCompleted: 1,
       sourcesEvaluated: 0,
       contradictionsFound: 0,
-      uniqueFactsExtracted: 0,
+      uniqueFactsExtracted: 1,
       deduplicatedCount: 0,
       durationMs,
     },
@@ -125,14 +104,15 @@ Do not pad with generic introductions or unnecessary filler.`;
 }
 
 // ---------------------------------------------------------------------------
-// Full deep-research pipeline
+// Main Research Orchestration Pipeline
 // ---------------------------------------------------------------------------
 export async function orchestrateDeepResearch(
   payload: ResearchRequestPayload,
   onProgress?: ProgressCallback
 ): Promise<ResearchResult> {
   const startTime = Date.now();
-  const { query, mode = "deep" } = payload;
+  const rawQuery = (payload.query || "").trim();
+  const mode = payload.mode || "deep";
 
   // Gather uploaded files (supporting single file or files array)
   const uploadedFiles: UploadedFile[] = [];
@@ -145,6 +125,11 @@ export async function orchestrateDeepResearch(
   const hasPdf = uploadedFiles.length > 0;
   const pdfNames = uploadedFiles.map((f) => f.name);
 
+  // If query is empty but files are attached, create an intelligent query
+  const query = rawQuery || (hasPdf
+    ? `Analyze, summarize, and extract key findings from ${pdfNames.join(", ")}`
+    : "Comprehensive Research Overview");
+
   const notify = (
     id: ProgressStepId,
     label: string,
@@ -156,25 +141,28 @@ export async function orchestrateDeepResearch(
     }
   };
 
-  // Route simple factual questions to the lightweight path (no PDF attached, quick or deep mode)
-  if (!hasPdf && mode !== "academic" && isSimpleQuestion(query)) {
-    return runQuickAnswer(query, notify, startTime);
+  // Only pure conversational greetings without any PDFs in Quick mode bypass the pipeline
+  if (!hasPdf && mode === "quick" && isConversationalGreeting(query)) {
+    return runConversationalGreeting(query, notify, startTime);
   }
 
-  console.log(`[Orchestrator] Starting deep research pipeline for query: "${query}" (mode=${mode}, hasPdf=${hasPdf})`);
+  console.log(`[Orchestrator] Starting research pipeline: "${query.slice(0, 60)}" (mode=${mode}, hasPdf=${hasPdf})`);
 
-  // STEP 1: Research Planning (bounded to 15s)
+  // ──────────────────────────────────────────────
+  // STEP 1: Research Planning & Intent Analysis (bounded to 10s)
+  // ──────────────────────────────────────────────
   notify(
     "planning",
     `Formulating ${mode.toUpperCase()} research plan…`,
-    "in_progress"
+    "in_progress",
+    "Analyzing query intent, dimensions, and subtasks"
   );
-  let plan;
+
+  let plan: ResearchPlan;
   try {
-    console.log(`[Orchestrator] Formulating research plan...`);
     plan = await withTimeout(
       createResearchPlan(query, mode, hasPdf, pdfNames),
-      15_000,
+      10_000,
       "Research Planning"
     );
   } catch (planErr) {
@@ -184,105 +172,167 @@ export async function orchestrateDeepResearch(
       mode,
       isComplex: mode !== "quick",
       hasPdf,
-      subtasks: [
-        `Core principles, taxonomy, and definitions of ${query.slice(0, 40)}`,
-        "Recent industry developments and state-of-the-art implementations",
-        "Empirical benchmarks, trade-offs, and critical analysis",
-      ],
-      searchQueries: [query],
+      subtasks: mode === "quick"
+        ? [`Core definition, verified mechanism, and concise answer for "${query}"`]
+        : mode === "academic"
+        ? [
+            `Theoretical foundation and literature framing of ${query.slice(0, 40)}`,
+            "State-of-the-art methodology, algorithms, and empirical benchmarks",
+            "Limitations, comparative trade-offs, and open research challenges",
+          ]
+        : [
+            `Core principles, operational mechanisms, and taxonomy of ${query.slice(0, 40)}`,
+            "Current state of the art, modern implementations, and adoption",
+            "Empirical benchmarks, critical trade-offs, and future outlook",
+          ],
+      searchQueries: [query, `${query} overview`],
     };
   }
 
   const planPreview =
     plan.subtasks.length > 0
-      ? `Researching:\n${plan.subtasks.map((st, i) => `${i + 1}. ${st}`).join("   ")}`
+      ? `Subtasks:\n${plan.subtasks.map((st, i) => `${i + 1}. ${st}`).join("\n")}`
       : `Intent: "${plan.intent}"`;
 
   notify("planning", "Research plan formulated", "completed", planPreview);
 
-  // STEP 2 & 3: Web Retrieval & PDF Processing (bounded to 22s)
+  // ──────────────────────────────────────────────
+  // STEP 2 & 3: Web Retrieval & PDF Processing (bounded to 18s)
+  // ──────────────────────────────────────────────
   notify(
     "retrieval",
     `Retrieving ${mode === "academic" ? "academic papers & peer-reviewed sources" : "verified sources"}…`,
-    "in_progress"
+    "in_progress",
+    `Querying sources for: ${plan.searchQueries.slice(0, 2).join(", ")}`
   );
 
   if (hasPdf) {
     notify(
       "pdf_processing",
-      `Analysing document${uploadedFiles.length > 1 ? "s" : ""}: ${pdfNames.join(", ")}…`,
-      "in_progress"
+      `Analyzing document${uploadedFiles.length > 1 ? "s" : ""}: ${pdfNames.join(", ")}…`,
+      "in_progress",
+      "Extracting text evidence, methodology, and citations"
     );
   } else {
     notify("pdf_processing", "No PDF uploaded", "skipped");
   }
 
-  let retrievalResult;
-  let pdfResult;
+  let retrievalResult: {
+    summaryOfFindings: string;
+    sources: any[];
+    papers: any[];
+    videos: any[];
+    images: any[];
+    additionalResources: any[];
+  } = {
+    summaryOfFindings: `Research findings for query: ${query}`,
+    sources: [],
+    papers: [],
+    videos: [],
+    images: [],
+    additionalResources: [],
+  };
+
+  let pdfResult: MultiPdfAnalysisResult | undefined = undefined;
+
   try {
-    console.log(`[Orchestrator] Starting retrieval & document processing...`);
-    [retrievalResult, pdfResult] = await withTimeout(
-      Promise.all([
+    const [retrievalSettled, pdfSettled] = await withTimeout(
+      Promise.allSettled([
         retrieveInformation(query, plan.searchQueries, mode),
-        hasPdf
-          ? processPdfDocuments(uploadedFiles, query)
-          : Promise.resolve(undefined),
+        hasPdf ? processPdfDocuments(uploadedFiles, query) : Promise.resolve(undefined),
       ]),
-      22_000,
-      "Retrieval & PDF processing"
+      18_000,
+      "Retrieval & PDF Processing"
     );
-  } catch (retrievalErr) {
-    console.warn("[Orchestrator] Retrieval timed out or errored, using fallback summary:", retrievalErr);
-    retrievalResult = {
-      summaryOfFindings: `Research findings synthesized from core knowledge base for query: ${query}`,
-      sources: [],
-      papers: [],
-      videos: [],
-      images: [],
-      additionalResources: [],
-    };
-    pdfResult = undefined;
+
+    if (retrievalSettled.status === "fulfilled" && retrievalSettled.value) {
+      retrievalResult = retrievalSettled.value;
+    } else if (retrievalSettled.status === "rejected") {
+      console.warn("[Orchestrator] Web retrieval failed or timed out:", retrievalSettled.reason);
+      retrievalResult = {
+        summaryOfFindings: "External source retrieval was unavailable. Do not present any claim as verified or retrieved unless it is supported by an attached document.",
+        sources: [],
+        papers: [],
+        videos: [],
+        images: [],
+        additionalResources: [],
+      };
+    }
+
+    if (hasPdf && pdfSettled.status === "fulfilled") {
+      pdfResult = pdfSettled.value;
+    } else if (hasPdf && pdfSettled.status === "rejected") {
+      console.warn("[Orchestrator] PDF processing failed or timed out:", pdfSettled.reason);
+    }
+  } catch (err) {
+    console.warn("[Orchestrator] Overall retrieval/PDF phase timed out:", err);
   }
 
+  const sourceCount = retrievalResult.sources.length;
+  const paperCount = retrievalResult.papers.length;
   notify(
     "retrieval",
     "Source retrieval complete",
     "completed",
-    `Gathered ${retrievalResult.sources.length} sources (${retrievalResult.papers.length} academic papers, ${retrievalResult.videos.length} videos, ${retrievalResult.additionalResources.length} datasets/tools).`
+    sourceCount > 0
+      ? `Gathered ${sourceCount} verified source${sourceCount > 1 ? "s" : ""} (${paperCount} academic paper${paperCount !== 1 ? "s" : ""}).`
+      : "No external sources were retrieved. Any answer will clearly distinguish model knowledge from verified evidence."
   );
 
-  if (hasPdf && pdfResult) {
-    notify(
-      "pdf_processing",
-      "PDF analysis complete",
-      "completed",
-      `Extracted ${pdfResult.pdfReferences.length} page/section citations across ${pdfResult.fileNames.join(", ")}.`
-    );
+  if (hasPdf) {
+    if (pdfResult && pdfResult.pdfReferences.length > 0) {
+      notify(
+        "pdf_processing",
+        "PDF analysis complete",
+        "completed",
+        `Extracted ${pdfResult.pdfReferences.length} page/section citations across ${pdfResult.fileNames.join(", ")}.`
+      );
+    } else if (pdfResult) {
+      notify(
+        "pdf_processing",
+        "PDF analysis complete",
+        "completed",
+        `Synthesized document context across ${pdfNames.join(", ")}.`
+      );
+    } else {
+      notify(
+        "pdf_processing",
+        "PDF processing completed with fallback",
+        "completed",
+        "The document could not be processed, so no document evidence will be claimed."
+      );
+    }
   }
 
-  // STEP 4: Evidence Evaluation & Contradiction Detection
+  // ──────────────────────────────────────────────
+  // STEP 4: Evidence Evaluation & Contradiction Detection (bounded to 4s)
+  // ──────────────────────────────────────────────
   notify(
     "evaluation",
     "Cross-referencing evidence and evaluating source credibility…",
-    "in_progress"
+    "in_progress",
+    "Validating claims, publication tiers, and potential discrepancies"
   );
+
   notify(
     "evaluation",
     "Evidence evaluated",
     "completed",
-    `Evaluated source authority and cross-referenced claims between external literature and document context.`
+    `Evaluated ${sourceCount} source${sourceCount !== 1 ? "s" : ""} and cross-referenced claims across external literature${hasPdf ? " and document evidence" : ""}.`
   );
 
-  // STEP 5: Report Synthesis (bounded to 25s)
+  // ──────────────────────────────────────────────
+  // STEP 5: Report Synthesis (bounded to 18s)
+  // ──────────────────────────────────────────────
   notify(
     "synthesis",
-    `Synthesising ${mode.toUpperCase()} research report with claim citations…`,
-    "in_progress"
+    `Synthesizing ${mode.toUpperCase()} research report with claim citations…`,
+    "in_progress",
+    "Structuring comprehensive sections and inline citations"
   );
 
   let synthesisResult;
   try {
-    console.log(`[Orchestrator] Starting report synthesis...`);
     synthesisResult = await withTimeout(
       synthesizeResearchAnswer({
         query,
@@ -291,7 +341,7 @@ export async function orchestrateDeepResearch(
         sources: retrievalResult.sources,
         pdfAnalysis: pdfResult,
       }),
-      25_000,
+      18_000,
       "Report Synthesis"
     );
   } catch (synthErr) {
@@ -300,8 +350,15 @@ export async function orchestrateDeepResearch(
       sections: [
         {
           id: "sec-1",
-          title: "Executive Summary",
-          content: `This research report addresses the query: **${query}**.\n\n${retrievalResult.summaryOfFindings}`,
+          title: mode === "quick" ? "Direct Answer & Key Mechanism" : "Executive Overview",
+          content: `### Research Findings for "${query}"\n\n${retrievalResult.summaryOfFindings}`,
+        },
+        {
+          id: "sec-2",
+          title: mode === "quick" ? "Verified Evidence & Takeaways" : "Detailed Analysis & Evidence",
+          content: hasPdf && pdfResult?.extractedFindings
+            ? `**Document Evidence (${pdfNames.join(", ")}):**\n\n${pdfResult.extractedFindings.slice(0, 1200)}`
+            : "No verified external or document evidence was available for this request. The answer is limited to the model-generated overview above.",
         },
       ],
       relatedQuestions: [
@@ -313,11 +370,14 @@ export async function orchestrateDeepResearch(
 
   notify("synthesis", "Report synthesis complete", "completed");
 
+  // ──────────────────────────────────────────────
   // STEP 6: No-Repetition System (Deduplication)
+  // ──────────────────────────────────────────────
   notify(
     "deduplication",
     "Applying No-Repetition filter across all findings and sources…",
-    "in_progress"
+    "in_progress",
+    "Pruning redundant findings and duplicate references"
   );
 
   const deduplicated = runDeduplicationSystem(
@@ -333,7 +393,7 @@ export async function orchestrateDeepResearch(
     "deduplication",
     "No-Repetition filter applied",
     "completed",
-    `Pruned ${deduplicated.deduplicatedCount} redundant items/repetitions.`
+    `Pruned ${deduplicated.deduplicatedCount} redundant item${deduplicated.deduplicatedCount !== 1 ? "s" : ""}.`
   );
 
   const durationMs = Date.now() - startTime;

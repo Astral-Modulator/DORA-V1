@@ -6,9 +6,9 @@ import { answerResearchFollowUp } from "./qaAssistant.js";
 import { ResearchRequestPayload, ResearchResult, QaMessage } from "../src/types.js";
 
 // Maximum wall-clock time (ms) we allow a single research request to run.
-// Vercel hobby/pro maxDuration is 60s; keep this a bit under to guarantee
+// Vercel hobby maxDuration is 60s; keep this comfortably under to guarantee
 // the SSE error frame gets sent before the function is killed.
-const RESEARCH_TIMEOUT_MS = 55_000;
+const RESEARCH_TIMEOUT_MS = 50_000;
 
 /** Serialize any thrown value into a clean, human-readable string */
 function errorMessage(err: unknown): string {
@@ -47,13 +47,19 @@ export function createExpressApp() {
   });
 
   // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────────
   // Standard Research Endpoint (Non-streaming)
   // ──────────────────────────────────────────────
   app.post("/api/research", async (req, res) => {
     try {
       const payload: ResearchRequestPayload = req.body;
-      if (!payload || !payload.query || typeof payload.query !== "string") {
+      const hasFiles = Boolean((payload?.files && payload.files.length > 0) || payload?.file);
+      if (!payload || ((!payload.query || typeof payload.query !== "string" || !payload.query.trim()) && !hasFiles)) {
         return res.status(400).json({ error: "Missing or invalid 'query' in request body." });
+      }
+
+      if (!payload.query || !payload.query.trim()) {
+        payload.query = "Analyze and synthesize findings from uploaded document(s)";
       }
 
       const result = await orchestrateDeepResearch(payload);
@@ -69,13 +75,18 @@ export function createExpressApp() {
   // ──────────────────────────────────────────────
   app.post("/api/research/stream", async (req, res) => {
     const payload: ResearchRequestPayload = req.body;
-    if (!payload || !payload.query || typeof payload.query !== "string") {
+    const hasFiles = Boolean((payload?.files && payload.files.length > 0) || payload?.file);
+    if (!payload || ((!payload.query || typeof payload.query !== "string" || !payload.query.trim()) && !hasFiles)) {
       return res.status(400).json({ error: "Missing or invalid 'query' in request body." });
+    }
+
+    if (!payload.query || !payload.query.trim()) {
+      payload.query = "Analyze and synthesize findings from uploaded document(s)";
     }
 
     const queryPreview = payload.query.slice(0, 60);
     const mode = payload.mode || "deep";
-    console.log(`[SSE] Incoming research stream request: "${queryPreview}" (mode=${mode}, hasPdf=${Boolean(payload.files?.length || payload.file)})`);
+    console.log(`[SSE] Incoming research stream request: "${queryPreview}" (mode=${mode}, hasPdf=${hasFiles})`);
 
     // Configure SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -84,10 +95,15 @@ export function createExpressApp() {
     res.setHeader("X-Accel-Buffering", "no"); // disable Nginx/Vercel edge buffering
     res.flushHeaders?.();
 
+    // Flush initial comment so reverse proxies (Vercel, Cloudflare, etc.) immediately open the stream
+    res.write(": dora-sse-connected\n\n");
+    (res as any).flush?.();
+
     let finished = false;
+    let clientDisconnected = false;
 
     const sendEvent = (event: string, data: unknown) => {
-      if (finished) return;
+      if (finished || clientDisconnected || res.writableEnded || res.destroyed) return;
       try {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
         (res as any).flush?.();
@@ -96,7 +112,20 @@ export function createExpressApp() {
       }
     };
 
+    // Heartbeat every 3 seconds to ensure edge proxies never idle-timeout during model calls
+    const heartbeatInterval = setInterval(() => {
+      if (!finished && !clientDisconnected && !res.writableEnded && !res.destroyed) {
+        try {
+          res.write(": keepalive\n\n");
+          (res as any).flush?.();
+        } catch {
+          // write failure handled on next attempt or close
+        }
+      }
+    }, 3000);
+
     const finish = () => {
+      clearInterval(heartbeatInterval);
       if (finished) return;
       finished = true;
       try { res.end(); } catch { /* already closed */ }
@@ -112,13 +141,16 @@ export function createExpressApp() {
       finish();
     }, RESEARCH_TIMEOUT_MS);
 
-    // Handle early client disconnect
-    req.on("close", () => {
-      clearTimeout(timeoutHandle);
-      if (!finished) {
-        console.log(`[SSE] Client closed connection early for: "${queryPreview}"`);
+    // Do not use req.on("close") here: for a POST, Node/Vercel may emit it
+    // after the request body is read even while the response stream is healthy.
+    // That previously suppressed the result frame after orchestration succeeded.
+    res.on("close", () => {
+      if (!finished && !res.writableEnded) {
+        clientDisconnected = true;
+        clearTimeout(timeoutHandle);
+        clearInterval(heartbeatInterval);
+        console.log(`[SSE] Client disconnected before delivery completed for: "${queryPreview}"`);
       }
-      finished = true;
     });
 
     try {
