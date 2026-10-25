@@ -171,49 +171,61 @@ function AppContent() {
 
           if (!dataStr) continue;
 
+          // Parse the JSON payload; fall back gracefully on malformed frames
+          let data: any = null;
           try {
-            const data = JSON.parse(dataStr);
-
-            if (eventName === "progress") {
-              const incomingStep = data as ProgressStep;
-              setProgressSteps((prev) =>
-                prev.map((step) =>
-                  step.id === incomingStep.id ? { ...step, ...incomingStep } : step
-                )
-              );
-            } else if (eventName === "result") {
-              const researchRes = data as ResearchResult;
-              setResult(researchRes);
-
-              // Auto-persist in history
-              const sessionId = `res-${Date.now()}`;
-              setActiveSessionId(sessionId);
-              const newHistoryItem: HistoryItem = {
-                id: sessionId,
-                timestamp: Date.now(),
-                query: researchRes.query,
-                result: researchRes,
-                qaMessages: [],
-                diagram: undefined,
-              };
-
-              setHistory((prev) => {
-                const updated = [newHistoryItem, ...prev.filter((h) => h.id !== sessionId)];
-                try {
-                  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-                } catch (e) {
-                  console.warn("Storage write error:", e);
-                }
-                return updated;
-              });
-            } else if (eventName === "error") {
-              throw new Error(data.message || "Deep research process failed.");
-            }
-          } catch (jsonErr: any) {
+            data = JSON.parse(dataStr);
+          } catch {
+            // Non-JSON frame — only an error if this was an error event
             if (eventName === "error") {
-              throw new Error(dataStr);
+              throw new Error(dataStr.slice(0, 200));
             }
-            console.warn("SSE parse error:", jsonErr);
+            console.warn("SSE non-JSON frame ignored:", dataStr.slice(0, 80));
+            continue;
+          }
+
+          if (eventName === "progress") {
+            const incomingStep = data as ProgressStep;
+            setProgressSteps((prev) =>
+              prev.map((step) =>
+                step.id === incomingStep.id ? { ...step, ...incomingStep } : step
+              )
+            );
+          } else if (eventName === "result") {
+            const researchRes = data as ResearchResult;
+            setResult(researchRes);
+
+            // Auto-persist in history
+            const sessionId = `res-${Date.now()}`;
+            setActiveSessionId(sessionId);
+            const newHistoryItem: HistoryItem = {
+              id: sessionId,
+              timestamp: Date.now(),
+              query: researchRes.query,
+              result: researchRes,
+              qaMessages: [],
+              diagram: undefined,
+            };
+
+            setHistory((prev) => {
+              const updated = [newHistoryItem, ...prev.filter((h) => h.id !== sessionId)];
+              try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+              } catch (e) {
+                console.warn("Storage write error:", e);
+              }
+              return updated;
+            });
+          } else if (eventName === "error") {
+            // Safely extract the human-readable message from the error frame
+            const msg =
+              (typeof data?.message === "string" && data.message)
+                ? data.message
+                : JSON.stringify(data).slice(0, 300);
+            throw new Error(msg);
+          } else if (eventName === "done") {
+            // Server signalled completion — break out of outer read loop
+            break;
           }
         }
       }

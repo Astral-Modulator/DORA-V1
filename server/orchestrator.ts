@@ -3,6 +3,7 @@ import { retrieveInformation } from "./retriever.js";
 import { processPdfDocuments } from "./pdfProcessor.js";
 import { runDeduplicationSystem } from "./deduplicator.js";
 import { synthesizeResearchAnswer } from "./synthesizer.js";
+import { generateContentWithRetry, PRIMARY_MODEL } from "./geminiClient.js";
 import {
   ResearchResult,
   ResearchRequestPayload,
@@ -13,6 +14,119 @@ import {
 
 export type ProgressCallback = (step: ProgressStep) => void;
 
+// ---------------------------------------------------------------------------
+// Heuristic: detect whether a query is a simple conversational/factual question
+// that does NOT need a full multi-step research pipeline.
+// ---------------------------------------------------------------------------
+function isSimpleQuestion(query: string): boolean {
+  const q = query.trim().toLowerCase();
+
+  // Very short queries (≤ 6 words) with a question word → simple
+  const words = q.split(/\s+/);
+  const questionWords = ["what", "who", "when", "where", "why", "how", "is", "are", "does", "do", "can", "will"];
+  const startsWithQuestion = questionWords.some((w) => q.startsWith(w));
+
+  if (words.length <= 6 && startsWithQuestion) return true;
+
+  // Conversational patterns
+  const conversationalPatterns = [
+    /^(hi|hello|hey|good morning|good evening)\b/,
+    /^(what is|what's|whats)\s+\w+\??$/,
+    /^(who is|who's|who was)\s+.{3,40}\??$/,
+    /^(when (did|was|is))\s+.{3,40}\??$/,
+    /^(define|meaning of|definition of)\s+/,
+    /^(how (do|does|did|to))\s+\w+(\s+\w+)?\??$/,
+    /^(capital of|currency of|population of)\s+/,
+    /^(yes|no|okay|ok|thanks|thank you)\b/,
+  ];
+
+  if (conversationalPatterns.some((p) => p.test(q))) return true;
+
+  // Long, complex queries → full pipeline
+  if (words.length >= 12) return false;
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight direct Q&A path (skips planner / retriever / synthesis pipeline)
+// ---------------------------------------------------------------------------
+async function runQuickAnswer(
+  query: string,
+  notify: (id: ProgressStepId, label: string, status: ProgressStep["status"], detail?: string) => void,
+  startTime: number
+): Promise<ResearchResult> {
+  notify("planning", "Analysing question…", "in_progress");
+
+  const systemInstruction = `You are DORA, an expert research assistant.
+Answer the user's question clearly and accurately. Be concise but complete.
+Format your response in clean Markdown (use **bold**, bullet points, or code blocks where helpful).
+Do not pad with generic introductions or unnecessary filler.`;
+
+  let answerText: string;
+  try {
+    const response = await generateContentWithRetry({
+      preferredModel: PRIMARY_MODEL,
+      contents: query,
+      config: { systemInstruction, temperature: 0.3 },
+    });
+    answerText = response.text?.trim() || "I was unable to generate an answer. Please try again.";
+  } catch (err: any) {
+    answerText = `Could not retrieve an answer: ${err?.message || String(err)}`;
+  }
+
+  notify("planning", "Answer ready", "completed");
+  ["retrieval", "pdf_processing", "evaluation", "synthesis", "deduplication"].forEach((id) => {
+    notify(id as ProgressStepId, "Skipped (simple question)", "skipped");
+  });
+
+  const durationMs = Date.now() - startTime;
+
+  return {
+    query,
+    mode: "quick",
+    isDeepResearch: false,
+    hasPdf: false,
+    pdfFileName: "",
+    pdfFileNames: [],
+    pdfFiles: [],
+    plan: {
+      intent: query,
+      mode: "quick",
+      isComplex: false,
+      hasPdf: false,
+      subtasks: [],
+      searchQueries: [],
+    },
+    sections: [
+      {
+        id: "sec-1",
+        title: "Answer",
+        content: answerText,
+      },
+    ],
+    sources: [],
+    papers: [],
+    videos: [],
+    images: [],
+    additionalResources: [],
+    pdfReferences: [],
+    contradictions: undefined,
+    relatedQuestions: [],
+    stats: {
+      subtasksCompleted: 0,
+      sourcesEvaluated: 0,
+      contradictionsFound: 0,
+      uniqueFactsExtracted: 0,
+      deduplicatedCount: 0,
+      durationMs,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Full deep-research pipeline
+// ---------------------------------------------------------------------------
 export async function orchestrateDeepResearch(
   payload: ResearchRequestPayload,
   onProgress?: ProgressCallback
@@ -42,10 +156,15 @@ export async function orchestrateDeepResearch(
     }
   };
 
+  // Route simple factual questions to the lightweight path (no PDF attached, quick or deep mode)
+  if (!hasPdf && mode !== "academic" && isSimpleQuestion(query)) {
+    return runQuickAnswer(query, notify, startTime);
+  }
+
   // STEP 1: Research Planning
   notify(
     "planning",
-    `Formulating ${mode.toUpperCase()} research plan...`,
+    `Formulating ${mode.toUpperCase()} research plan…`,
     "in_progress"
   );
   const plan = await createResearchPlan(query, mode, hasPdf, pdfNames);
@@ -60,14 +179,14 @@ export async function orchestrateDeepResearch(
   // STEP 2 & 3: Web Retrieval & PDF Processing
   notify(
     "retrieval",
-    `Retrieving ${mode === "academic" ? "academic papers & peer-reviewed sources" : "verified sources"}...`,
+    `Retrieving ${mode === "academic" ? "academic papers & peer-reviewed sources" : "verified sources"}…`,
     "in_progress"
   );
 
   if (hasPdf) {
     notify(
       "pdf_processing",
-      `Analyzing document${uploadedFiles.length > 1 ? "s" : ""}: ${pdfNames.join(", ")}...`,
+      `Analysing document${uploadedFiles.length > 1 ? "s" : ""}: ${pdfNames.join(", ")}…`,
       "in_progress"
     );
   } else {
@@ -100,10 +219,9 @@ export async function orchestrateDeepResearch(
   // STEP 4: Evidence Evaluation & Contradiction Detection
   notify(
     "evaluation",
-    "Cross-referencing evidence and evaluating source credibility...",
+    "Cross-referencing evidence and evaluating source credibility…",
     "in_progress"
   );
-
   notify(
     "evaluation",
     "Evidence evaluated",
@@ -114,7 +232,7 @@ export async function orchestrateDeepResearch(
   // STEP 5: Report Synthesis
   notify(
     "synthesis",
-    `Synthesizing ${mode.toUpperCase()} research report with claim citations...`,
+    `Synthesising ${mode.toUpperCase()} research report with claim citations…`,
     "in_progress"
   );
 
@@ -131,7 +249,7 @@ export async function orchestrateDeepResearch(
   // STEP 6: No-Repetition System (Deduplication)
   notify(
     "deduplication",
-    "Applying No-Repetition filter across all findings and sources...",
+    "Applying No-Repetition filter across all findings and sources…",
     "in_progress"
   );
 
@@ -189,4 +307,3 @@ export async function orchestrateDeepResearch(
     },
   };
 }
-
