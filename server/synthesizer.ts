@@ -32,6 +32,7 @@ export async function synthesizeResearchAnswer(
   const mode = input.plan.mode || "deep";
   const isAcademic = mode === "academic";
   const isQuick = mode === "quick";
+  const isResumeTask = /\b(resume|cv|curriculum vitae|ats|job application)\b/i.test(input.query);
 
   // Prepare source list description
   const formattedSources = input.sources
@@ -98,6 +99,9 @@ MANDATES:
 
 5. RELATED RESEARCH QUESTIONS:
    - Formulate 3-4 compelling, non-trivial follow-up research questions ("Explore Further") that logically expand on this research.
+
+6. DOCUMENT EDITING REQUESTS:
+   ${isResumeTask ? "- The attached resume is the primary evidence. Produce a practical ATS-friendly refinement: preserve every factual employer, date, skill, education record, and achievement; do not invent a target job, metrics, credentials, or experience. Clearly list any missing details the candidate must provide." : "- Not applicable unless the user explicitly asks for document editing."}
 
 OUTPUT FORMAT:
 Return strictly valid JSON with no markdown wrapping or code fences. Format:

@@ -15,6 +15,10 @@ import {
 
 export type ProgressCallback = (step: ProgressStep) => void;
 
+function isDocumentEditingRequest(query: string): boolean {
+  return /\b(resume|cv|curriculum vitae|ats|cover letter|proofread|rewrite|refine)\b/i.test(query);
+}
+
 // ---------------------------------------------------------------------------
 // Pure conversational greetings or salutations (no research requested)
 // ---------------------------------------------------------------------------
@@ -236,14 +240,20 @@ export async function orchestrateDeepResearch(
   let pdfResult: MultiPdfAnalysisResult | undefined = undefined;
 
   try {
-    const [retrievalSettled, pdfSettled] = await withTimeout(
-      Promise.allSettled([
-        retrieveInformation(query, plan.searchQueries, mode),
-        hasPdf ? processPdfDocuments(uploadedFiles, query) : Promise.resolve(undefined),
-      ]),
-      18_000,
-      "Retrieval & PDF Processing"
-    );
+    const documentEditingRequest = hasPdf && isDocumentEditingRequest(query);
+    // Independent settlements are critical: a slow PDF must not discard a
+    // completed retrieval result, and document-editing work should not spend
+    // time on irrelevant web retrieval before using the uploaded document.
+    const retrievalTask = documentEditingRequest
+      ? Promise.resolve({
+          summaryOfFindings: "External retrieval was intentionally skipped because this request is grounded in the uploaded document.",
+          sources: [], papers: [], videos: [], images: [], additionalResources: [],
+        })
+      : withTimeout(retrieveInformation(query, plan.searchQueries, mode), 18_000, "Source Retrieval");
+    const pdfTask = hasPdf
+      ? withTimeout(processPdfDocuments(uploadedFiles, query), 50_000, "PDF Processing")
+      : Promise.resolve(undefined);
+    const [retrievalSettled, pdfSettled] = await Promise.allSettled([retrievalTask, pdfTask]);
 
     if (retrievalSettled.status === "fulfilled" && retrievalSettled.value) {
       retrievalResult = retrievalSettled.value;
@@ -263,6 +273,13 @@ export async function orchestrateDeepResearch(
       pdfResult = pdfSettled.value;
     } else if (hasPdf && pdfSettled.status === "rejected") {
       console.warn("[Orchestrator] PDF processing failed or timed out:", pdfSettled.reason);
+      pdfResult = {
+        fileNames: pdfNames,
+        documentSummary: "Document processing did not finish within the safe processing window.",
+        extractedFindings: "",
+        pdfReferences: [],
+        processingError: "DORA could not finish reading this PDF in time. Try a smaller searchable PDF or split the document and try again.",
+      };
     }
   } catch (err) {
     console.warn("[Orchestrator] Overall retrieval/PDF phase timed out:", err);
@@ -280,14 +297,16 @@ export async function orchestrateDeepResearch(
   );
 
   if (hasPdf) {
-    if (pdfResult && pdfResult.pdfReferences.length > 0) {
+    if (pdfResult?.processingError) {
+      notify("pdf_processing", "PDF analysis could not extract evidence", "error", pdfResult.processingError);
+    } else if (pdfResult && pdfResult.pdfReferences.length > 0) {
       notify(
         "pdf_processing",
         "PDF analysis complete",
         "completed",
         `Extracted ${pdfResult.pdfReferences.length} page/section citations across ${pdfResult.fileNames.join(", ")}.`
       );
-    } else if (pdfResult) {
+    } else if (pdfResult && pdfResult.extractedFindings.trim()) {
       notify(
         "pdf_processing",
         "PDF analysis complete",
@@ -318,7 +337,7 @@ export async function orchestrateDeepResearch(
     "evaluation",
     "Evidence evaluated",
     "completed",
-    `Evaluated ${sourceCount} source${sourceCount !== 1 ? "s" : ""} and cross-referenced claims across external literature${hasPdf ? " and document evidence" : ""}.`
+    `Evaluated ${sourceCount} source${sourceCount !== 1 ? "s" : ""}${hasPdf && !pdfResult?.processingError ? " and available document evidence" : ""}.`
   );
 
   // ──────────────────────────────────────────────
@@ -415,6 +434,8 @@ export async function orchestrateDeepResearch(
     images: deduplicated.images,
     additionalResources: deduplicated.additionalResources,
     pdfReferences: pdfResult?.pdfReferences || [],
+    pdfDocumentContext: pdfResult && !pdfResult.processingError ? pdfResult.extractedFindings.slice(0, 12_000) : undefined,
+    pdfProcessingError: pdfResult?.processingError,
     contradictions: synthesisResult.contradictions,
     relatedQuestions: synthesisResult.relatedQuestions,
     stats: {

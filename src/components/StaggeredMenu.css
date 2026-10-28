@@ -394,6 +394,40 @@
 }
 
 @media (max-width: 640px) {
+  .staggered-menu-header {
+    padding: 0.75rem;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+
+  .sm-logo {
+    min-width: 0;
+    max-width: calc(100vw - 132px);
+  }
+
+  .sm-logo > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .sm-header-right {
+    min-width: 0;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .sm-toggle {
+    min-width: 36px;
+    min-height: 36px;
+    justify-content: center;
+    padding: 0.5rem;
+  }
+
+  .sm-toggle-textWrap {
+    display: none;
+  }
+
   .staggered-menu-panel,
   .sm-prelayers {
     width: 100%;

@@ -71,6 +71,24 @@ test("a valid PDF response reaches document evidence parsing", async () => {
   assert.match(pdf.extractedFindings, /Finding/);
 });
 
+test("an empty PDF model response is reported as an extraction failure", async () => {
+  setGeminiClientForTesting(fakeClient(() => ({ text: "" })));
+  const pdf = await processPdfDocuments([{ name: "scan.pdf", mimeType: "application/pdf", data: "a".repeat(80), size: 80 }], "Summarize it");
+  assert.match(pdf.processingError || "", /could not extract readable text/i);
+  assert.equal(pdf.pdfReferences.length, 0);
+});
+
+test("resume PDF analysis is instructed to preserve candidate facts without invention", async () => {
+  setGeminiClientForTesting(fakeClient((request) => {
+    const prompt = JSON.stringify(request.contents);
+    assert.match(prompt, /resume-refinement request/i);
+    return { text: "Candidate experience extracted." };
+  }));
+  const pdf = await processPdfDocuments([{ name: "resume.pdf", mimeType: "application/pdf", data: "a".repeat(80), size: 80 }], "Refine and make this ATS friendly resume");
+  assert.match(pdf.extractedFindings, /Candidate experience/i);
+  assert.equal(pdf.processingError, undefined);
+});
+
 test("no-search-result responses remain explicitly unverified", async () => {
   setGeminiClientForTesting(fakeClient(() => ({ text: "A general overview.", candidates: [{ groundingMetadata: { groundingChunks: [] } }] })));
   const retrieved = await retrieveInformation("an obscure topic", ["an obscure topic"], "quick");
@@ -85,6 +103,47 @@ test("follow-ups use the previous report context", async () => {
   }));
   const answer = await answerResearchFollowUp({ research: resultFixture(), question: "What is the takeaway?", history: [] });
   assert.equal(answer, "Grounded follow-up answer.");
+});
+
+test("follow-ups preserve bounded document context instead of sending an unbounded report", async () => {
+  const research = resultFixture();
+  research.sections = [{ id: "long", title: "Long report", content: "r".repeat(30_000) }];
+  research.hasPdf = true;
+  research.pdfDocumentContext = "resume evidence: actual employer and dates";
+  setGeminiClientForTesting(fakeClient((request) => {
+    const prompt = JSON.stringify(request.contents);
+    assert.match(prompt, /resume evidence: actual employer and dates/);
+    assert.match(prompt, /Context truncated to keep this follow-up responsive/);
+    assert.ok(prompt.length < 28_000);
+    return { text: "Bounded grounded answer." };
+  }));
+  const answer = await answerResearchFollowUp({ research, question: "What should be improved?", history: [] });
+  assert.equal(answer, "Bounded grounded answer.");
+});
+
+test("follow-up history is bounded before it reaches Gemini", async () => {
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `m-${index}`, role: index % 2 ? "assistant" as const : "user" as const,
+    content: `message-${index}-` + "h".repeat(5_000), timestamp: index,
+  }));
+  setGeminiClientForTesting(fakeClient((request) => {
+    const serialized = JSON.stringify(request.contents);
+    assert.ok(serialized.length < 16_000);
+    assert.match(serialized, /Context truncated to keep this follow-up responsive/);
+    return { text: "History safely bounded." };
+  }));
+  const answer = await answerResearchFollowUp({ research: resultFixture(), question: "Continue", history });
+  assert.equal(answer, "History safely bounded.");
+});
+
+test("fallback skips duplicate model identifiers", async () => {
+  const models: string[] = [];
+  setGeminiClientForTesting(fakeClient((request) => {
+    models.push(request.model);
+    throw new Error("400 invalid request");
+  }));
+  await assert.rejects(() => generateContentWithRetry({ contents: "test", timeoutMs: 500 }, 0));
+  assert.deepEqual(models, ["gemini-3.5-flash-lite", "gemini-3.5-flash"]);
 });
 
 test("a temporary Gemini 503 is retried", async () => {

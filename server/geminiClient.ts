@@ -104,102 +104,31 @@ export async function generateContentWithRetry(
   const ai = getGeminiClient();
   const primary = params.preferredModel || PRIMARY_MODEL;
   const perCallTimeout = params.timeoutMs || 15_000;
-
   let lastErr: unknown;
+  // A fallback must be a different model. The previous sequence could call the
+  // primary again as its own backup, multiplying latency without new recovery.
+  const models = Array.from(new Set([
+    primary,
+    primary === ADVANCED_MODEL ? BACKUP_MODEL : ADVANCED_MODEL,
+    BACKUP_MODEL,
+  ]));
 
-  // Phase 1 – primary model
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`[GeminiClient] Calling ${primary} (attempt ${attempt + 1}/${maxRetries + 1})...`);
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: primary,
-          contents: params.contents,
-          config: params.config,
-        }),
-        perCallTimeout,
-        `Gemini generateContent (${primary})`
-      );
-      return response;
-    } catch (err: unknown) {
-      lastErr = err;
-      const msg = String((err as any)?.message ?? err);
-      console.warn(
-        `[GeminiClient] ${primary} attempt ${attempt + 1}/${maxRetries + 1} failed: ${msg.slice(0, 160)}`
-      );
-
-      // 404 or unretryable -> break immediately to try fallback model
-      if (!isRetryable(err) || attempt === maxRetries) break;
-
-      // Strip googleSearch tool on quota/rate-limit errors
-      if (
-        params.config?.tools &&
-        (msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted"))
-      ) {
-        params = { ...params, config: { ...params.config, tools: undefined } };
-        console.log(`[GeminiClient] Removed tools from config for retry attempt ${attempt + 2}.`);
+  for (const [modelIndex, model] of models.entries()) {
+    const attempts = modelIndex === 0 ? maxRetries + 1 : 1;
+    const config = modelIndex === 0 ? params.config : (params.config?.tools ? { ...params.config, tools: undefined } : params.config);
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        console.log(`[GeminiClient] Calling ${model}${modelIndex ? " fallback" : ""} (attempt ${attempt + 1}/${attempts})...`);
+        return await withTimeout(ai.models.generateContent({ model, contents: params.contents, config }), perCallTimeout,
+          `Gemini ${modelIndex ? "fallback " : ""}generateContent (${model})`);
+      } catch (err: unknown) {
+        lastErr = err;
+        const msg = String((err as any)?.message ?? err);
+        console.warn(`[GeminiClient] ${model} attempt ${attempt + 1}/${attempts} failed: ${msg.slice(0, 160)}`);
+        if (!isRetryable(err) || attempt === attempts - 1) break;
+        await sleep(backoffMs(attempt));
       }
-
-      const delay = backoffMs(attempt);
-      console.log(`[GeminiClient] Backing off for ${delay}ms before retry ${attempt + 2}...`);
-      await sleep(delay);
     }
   }
-
-  // Phase 2 – fallback to ADVANCED_MODEL
-  const fallbackModel = primary === ADVANCED_MODEL ? BACKUP_MODEL : ADVANCED_MODEL;
-  console.warn(`[GeminiClient] Primary model (${primary}) failed. Attempting fallback: ${fallbackModel}`);
-
-  // Strip tools for fallback to maximize success probability
-  const fallbackConfig = params.config?.tools
-    ? { ...params.config, tools: undefined }
-    : params.config;
-
-  for (let attempt = 0; attempt <= 1; attempt++) {
-    try {
-      console.log(`[GeminiClient] Calling fallback ${fallbackModel} (attempt ${attempt + 1}/2)...`);
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: fallbackModel,
-          contents: params.contents,
-          config: fallbackConfig,
-        }),
-        perCallTimeout,
-        `Gemini fallback generateContent (${fallbackModel})`
-      );
-      console.log(`[GeminiClient] Fallback to ${fallbackModel} succeeded.`);
-      return response;
-    } catch (err: unknown) {
-      lastErr = err;
-      const msg = String((err as any)?.message ?? err);
-      console.warn(
-        `[GeminiClient] ${fallbackModel} fallback attempt ${attempt + 1}/2 failed: ${msg.slice(0, 160)}`
-      );
-      if (!isRetryable(err) || attempt === 1) break;
-      await sleep(backoffMs(attempt, 600, 2000));
-    }
-  }
-
-  // Phase 3 - ultimate backup model if fallback wasn't already BACKUP_MODEL
-  if (fallbackModel !== BACKUP_MODEL && primary !== BACKUP_MODEL) {
-    try {
-      console.warn(`[GeminiClient] Attempting ultimate backup model: ${BACKUP_MODEL}`);
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: BACKUP_MODEL,
-          contents: params.contents,
-          config: fallbackConfig,
-        }),
-        perCallTimeout,
-        `Gemini backup generateContent (${BACKUP_MODEL})`
-      );
-      console.log(`[GeminiClient] Backup ${BACKUP_MODEL} succeeded.`);
-      return response;
-    } catch (err: unknown) {
-      lastErr = err;
-      console.warn(`[GeminiClient] Ultimate backup model ${BACKUP_MODEL} failed:`, String(err).slice(0, 160));
-    }
-  }
-
   throw lastErr;
 }

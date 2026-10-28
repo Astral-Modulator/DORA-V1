@@ -679,6 +679,17 @@ export const ResearchViewer: React.FC<ResearchViewerProps> = ({
       )}
 
       {/* PDF References (When PDF was processed) */}
+      {result.hasPdf && result.pdfProcessingError && (
+        <section
+          className={`border-t pt-6 ${isDark ? "border-neutral-800" : "border-neutral-200"}`}
+        >
+          <div className={`rounded-md border p-3 text-xs leading-relaxed ${
+            isDark ? "border-amber-900/60 bg-amber-950/20 text-amber-200" : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}>
+            <strong>Document evidence was not available.</strong> {result.pdfProcessingError}
+          </div>
+        </section>
+      )}
       {result.hasPdf && result.pdfReferences && result.pdfReferences.length > 0 && (
         <section
           id="pdf-references-section"

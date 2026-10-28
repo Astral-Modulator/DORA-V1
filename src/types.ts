@@ -108,6 +108,9 @@ export interface ResearchResult {
   images: MediaResource[];
   additionalResources: MediaResource[];
   pdfReferences?: PdfReference[];
+  /** Bounded extracted document context retained for report follow-ups. */
+  pdfDocumentContext?: string;
+  pdfProcessingError?: string;
   contradictions?: ContradictionItem[];
   relatedQuestions?: string[];
   stats: ResearchStats;

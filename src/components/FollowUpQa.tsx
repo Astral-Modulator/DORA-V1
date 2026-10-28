@@ -232,7 +232,7 @@ export const FollowUpQa: React.FC<FollowUpQaProps> = ({
       )}
 
       {/* Input Box */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
         <div
           className={`relative flex-1 rounded-md p-[1.5px] overflow-hidden transition-colors shadow-sm ${
             isDark
@@ -272,7 +272,7 @@ export const FollowUpQa: React.FC<FollowUpQaProps> = ({
           whileTap={{ scale: 0.98 }}
           onClick={() => handleAsk()}
           disabled={isLoading || !question.trim()}
-          className={`inline-flex items-center gap-1.5 text-xs font-semibold px-4 py-2.5 rounded-md transition-all shadow-sm shrink-0 cursor-pointer disabled:cursor-not-allowed ${
+          className={`inline-flex w-full sm:w-auto justify-center items-center gap-1.5 text-xs font-semibold px-4 py-2.5 rounded-md transition-all shadow-sm shrink-0 cursor-pointer disabled:cursor-not-allowed ${
             question.trim()
               ? "bg-neutral-100 hover:bg-white text-black ring-1 ring-white/60 shadow-sm"
               : "bg-[#27272a] text-neutral-400 border border-neutral-600/80 hover:bg-[#323238] hover:text-neutral-300"

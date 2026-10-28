@@ -5,10 +5,10 @@ import { generateResearchDiagram } from "./diagramGenerator.js";
 import { answerResearchFollowUp } from "./qaAssistant.js";
 import { ResearchRequestPayload, ResearchResult, QaMessage } from "../src/types.js";
 
-// Maximum wall-clock time (ms) we allow a single research request to run.
-// Vercel hobby maxDuration is 60s; keep this comfortably under to guarantee
-// the SSE error frame gets sent before the function is killed.
-const RESEARCH_TIMEOUT_MS = 50_000;
+// Keep a delivery margin below the configured Vercel function duration (300s).
+// Document analysis and synthesis are sequential after planning, so the former
+// 50-second guard could terminate a valid PDF request before synthesis began.
+const RESEARCH_TIMEOUT_MS = 120_000;
 
 /** Serialize any thrown value into a clean, human-readable string */
 function errorMessage(err: unknown): string {
@@ -133,7 +133,7 @@ export function createExpressApp() {
 
     // Hard safety timeout: send error + done terminal events before Vercel kills function
     const timeoutHandle = setTimeout(() => {
-      console.warn(`[SSE] Research request reached overall safety timeout (55s) for: "${queryPreview}"`);
+      console.warn(`[SSE] Research request reached overall safety timeout (120s) for: "${queryPreview}"`);
       sendEvent("error", {
         message: "Research timed out. The topic may require too many sub-steps. Try using 'Quick' mode or a more specific query.",
       });
@@ -201,7 +201,7 @@ export function createExpressApp() {
         history?: QaMessage[];
       };
 
-      if (!research || !question || typeof question !== "string") {
+      if (!research || !question || typeof question !== "string" || !question.trim()) {
         return res.status(400).json({ error: "Missing research context or question." });
       }
 

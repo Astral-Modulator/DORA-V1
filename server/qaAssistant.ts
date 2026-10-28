@@ -1,6 +1,16 @@
 import { generateContentWithRetry, PRIMARY_MODEL } from "./geminiClient.js";
 import { ResearchResult, QaMessage } from "../src/types.js";
 
+const FOLLOW_UP_CONTEXT_LIMIT = 14_000;
+const FOLLOW_UP_DOCUMENT_CONTEXT_LIMIT = 8_000;
+const FOLLOW_UP_HISTORY_ITEM_LIMIT = 2_000;
+const FOLLOW_UP_HISTORY_LIMIT = 6;
+const FOLLOW_UP_TIMEOUT_MS = 20_000;
+
+function boundedText(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n\n[Context truncated to keep this follow-up responsive.]`;
+}
+
 export async function answerResearchFollowUp(params: {
   research: ResearchResult;
   question: string;
@@ -8,24 +18,26 @@ export async function answerResearchFollowUp(params: {
 }): Promise<string> {
   const { research, question, history } = params;
 
-  const sectionsContext = research.sections
+  const sectionsContext = boundedText(research.sections
     .map((s) => `## ${s.title}\n${s.content}`)
-    .join("\n\n");
+    .join("\n\n"), FOLLOW_UP_CONTEXT_LIMIT);
 
   const sourcesContext = research.sources
     .slice(0, 10)
     .map((src) => `[${src.id}] ${src.title} (${src.url})`)
     .join("\n");
 
-  const pdfContext =
-    research.hasPdf && research.pdfReferences && research.pdfReferences.length > 0
-      ? `\n\nPDF Document Findings (${research.pdfFileName}):\n` +
+  const pdfContext = research.hasPdf
+      ? `\n\nPDF Document Context (${research.pdfFileName}):\n${boundedText(research.pdfDocumentContext || "", FOLLOW_UP_DOCUMENT_CONTEXT_LIMIT)}\n` +
+        (research.pdfReferences && research.pdfReferences.length > 0
+          ?
         research.pdfReferences
           .map(
             (p) =>
               `- [${p.sectionTitle}${p.pageNumber ? `, page ${p.pageNumber}` : ""}]: ${p.extractedFinding}`
           )
-          .join("\n")
+          .join("\n") : "") +
+        (research.pdfProcessingError ? `\nDocument processing notice: ${research.pdfProcessingError}` : "")
       : "";
 
   const systemInstruction = `You are DORA's Research Q&A Specialist.
@@ -38,9 +50,9 @@ Guidelines:
 4. Format your answer using clean Markdown with bolding, code tags, or bullet points where it aids clarity.`;
 
   // Build dialogue history
-  const recentHistory = history.slice(-6).map((msg) => ({
+  const recentHistory = history.slice(-FOLLOW_UP_HISTORY_LIMIT).map((msg) => ({
     role: msg.role === "assistant" ? "model" : "user",
-    parts: [{ text: msg.content }],
+    parts: [{ text: boundedText(msg.content, FOLLOW_UP_HISTORY_ITEM_LIMIT) }],
   }));
 
   const userTurn = `Original Research Topic: "${research.query}"
@@ -71,7 +83,8 @@ Answer the question clearly and thoroughly:`;
         systemInstruction,
         temperature: 0.3,
       },
-    });
+      timeoutMs: FOLLOW_UP_TIMEOUT_MS,
+    }, 0);
 
     return response.text?.trim() || "No response could be generated for this question.";
   } catch (err: any) {

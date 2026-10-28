@@ -6,6 +6,7 @@ export interface MultiPdfAnalysisResult {
   documentSummary: string;
   extractedFindings: string;
   pdfReferences: PdfReference[];
+  processingError?: string;
 }
 
 export async function processPdfDocuments(
@@ -50,6 +51,7 @@ export async function processPdfDocuments(
 
   const fileNames = validFiles.map((f) => f.name);
 
+  const isResumeTask = /\b(resume|cv|curriculum vitae|ats|job application)\b/i.test(query);
   const systemInstruction = `You are DORA's Document Intelligence Engine.
 Analyze the provided PDF document(s) with high academic and empirical precision.
 
@@ -89,7 +91,9 @@ REFERENCES_JSON>>>`;
     text: `Documents Analyzed: ${fileNames.join(", ")}
 Research Inquiry: "${query}"
 
-Please extract structured findings, cite exact page numbers, explain core terminology, and note any empirical discoveries or cross-document comparisons.`,
+${isResumeTask
+  ? "This is a resume-refinement request. Extract only facts actually present: contact fields, roles, employers, dates, education, skills, achievements, and missing information. Preserve factual content exactly; do not invent target roles, metrics, credentials, or experience. Return an actionable ATS-friendly rewrite plan and highlight gaps that need user input."
+  : "Please extract structured findings, cite exact page numbers, explain core terminology, and note any empirical discoveries or cross-document comparisons."}`,
   });
 
   try {
@@ -100,8 +104,10 @@ Please extract structured findings, cite exact page numbers, explain core termin
         systemInstruction,
         temperature: 0.2,
       },
-      timeoutMs: 16_000,
-    });
+      // PDF understanding includes upload decoding and can take longer than a
+      // text completion; the orchestration layer still has a total deadline.
+      timeoutMs: 24_000,
+    }, 0);
 
     const outputText = response.text || "";
 
@@ -133,6 +139,16 @@ Please extract structured findings, cite exact page numbers, explain core termin
       .replace(/```json\s*\[\s*\{[\s\S]*?\}\s*\]\s*```/, "")
       .trim();
 
+    if (!cleanedText) {
+      return {
+        fileNames: files.map((f) => f.name),
+        documentSummary: "No readable document content was returned.",
+        extractedFindings: invalidFileNotices.join("\n"),
+        pdfReferences: [],
+        processingError: "DORA could not extract readable text from this PDF. If it is scanned or protected, upload a searchable, unencrypted PDF.",
+      };
+    }
+
     const finalFindings = invalidFileNotices.length > 0
       ? `${cleanedText}\n\n*Notice regarding other files:*\n${invalidFileNotices.join("\n")}`
       : cleanedText;
@@ -140,7 +156,7 @@ Please extract structured findings, cite exact page numbers, explain core termin
     return {
       fileNames: files.map((f) => f.name),
       documentSummary: cleanedText.slice(0, 600) + (cleanedText.length > 600 ? "..." : ""),
-      extractedFindings: finalFindings || "Document analysis completed with no specific text extracted.",
+      extractedFindings: finalFindings,
       pdfReferences,
     };
   } catch (err) {
@@ -155,6 +171,9 @@ Please extract structured findings, cite exact page numbers, explain core termin
         ? "The uploaded document could not be processed. If this is a scanned PDF, note that OCR text extraction is not currently supported for image-only scans. Please upload a searchable PDF."
         : `Document analysis notice: ${msg}`,
       pdfReferences: [],
+      processingError: isScanOrUnsupported
+        ? "The PDF appears unsupported or image-only. Upload a searchable PDF; OCR is not available."
+        : "DORA could not extract usable document evidence. Try a smaller searchable PDF and submit again.",
     };
   }
 }

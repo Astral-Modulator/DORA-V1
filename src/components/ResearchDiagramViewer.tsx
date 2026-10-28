@@ -398,7 +398,7 @@ export const ResearchDiagramViewer: React.FC<ResearchDiagramViewerProps> = ({
                 </div>
               ) : svgHtml ? (
                 <div
-                  className="w-full flex justify-center [&_svg]:max-w-full [&_svg]:h-auto"
+                  className="w-full min-w-max sm:min-w-0 flex justify-center [&_svg]:min-w-[560px] sm:[&_svg]:min-w-0 [&_svg]:max-w-none sm:[&_svg]:max-w-full [&_svg]:h-auto"
                   dangerouslySetInnerHTML={{ __html: svgHtml }}
                 />
               ) : (
